@@ -527,6 +527,36 @@ def limpar_nome_arquivo(nome: str) -> str:
     nome_limpo = nome_limpo.replace(' ', '_')
     return nome_limpo
 
+async def menu_converter_mp3_para_mp4():
+    await exibir_banner()
+    print("\n🎬 CONVERTER MP3 PARA MP4")
+
+    dir_download = "/storage/emulated/0/Download"
+    arquivos = listar_arquivos(dir_download, ['.mp3'])
+
+    if not arquivos:
+        print("\n⚠️ Nenhum arquivo MP3 encontrado na pasta Download.")
+        await aioconsole.ainput("\nPressione ENTER para voltar ao menu...")
+        return
+
+    print("\nArquivos MP3 encontrados:")
+    for i, nome in enumerate(arquivos, 1):
+        print(f"{i}. {nome}")
+
+    escolha = await obter_opcao("\nDigite o número do arquivo MP3 para converter: ", [str(i) for i in range(1, len(arquivos) + 1)])
+    arquivo_escolhido = arquivos[int(escolha) - 1]
+    caminho_mp3 = os.path.join(dir_download, arquivo_escolhido)
+
+    try:
+        duracao = obter_duracao_ffprobe(caminho_mp3)
+        saida_mp4 = os.path.splitext(caminho_mp3)[0] + ".mp4"
+        criar_video_com_audio(caminho_mp3, saida_mp4, duracao)
+        print(f"\n✅ Vídeo gerado com sucesso: {saida_mp4}")
+    except Exception as e:
+        print(f"\n❌ Erro ao gerar vídeo: {e}")
+
+    await aioconsole.ainput("\nPressione ENTER para continuar...")
+
 def unificar_audio(temp_files, arquivo_final) -> bool:
     """Une os arquivos de áudio temporários em um único arquivo final."""
     try:
@@ -1558,6 +1588,8 @@ async def main() -> None:
             await exibir_ajuda()
         elif opcao == '5':
             await atualizar_script()
+        elif opcao == '6':
+            await menu_converter_mp3_para_mp4()
         elif opcao == '7':
             print("\n👋 Obrigado por usar o Conversor TTS Completo!")
             break
