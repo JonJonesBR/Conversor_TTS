@@ -7,6 +7,7 @@ def padronizar_capitulos(texto):
         'CINCO': 5, 'CINCOI': 6, 'CINCOII': 7, 'CINCOIII': 8, 'CINCOIV': 9, 'CINCOV': 10,
         'UMX': 9, 'DEZ': 10, 'DEZI': 11, 'ONZE': 11, 'DOZE': 12
     }
+
     def substituidor(match):
         capitulo = match.group(1).strip().upper()
         titulo = match.group(2).strip()
@@ -28,15 +29,34 @@ def normalizar_caixa(texto):
     return "\n".join(texto_final)
 
 def separar_capitulos(texto):
-    return re.sub(r'(CAP[IÍ]TULO\s+\d+:)', r'\n\n\1', texto)
-
-def gerar_indice(texto):
-    padrao = re.compile(r'CAP[IÍ]TULO\s+(\d+):\s+(.+)', re.IGNORECASE)
+    """
+    Ajusta a marcação dos capítulos para:
+    'Capítulo 1.' (com ponto final e duas quebras de linha antes e depois).
+    """
+    return re.sub(
+        r'(CAP[IÍ]TULO\s+\d+)(:)?',
+        lambda m: f"\n\n{m.group(1).upper()}.\n\n",
+        texto,
+        flags=re.IGNORECASE
+    )
     return "\n".join([
         f"{match.group(1)}. {match.group(2).title()}" for match in padrao.finditer(texto)
     ])
 
+def remover_numeracao_avulsa(texto):
+    """
+    Remove numerações isoladas no início de linhas (como números de página ou listas não desejadas).
+    """
+    linhas = texto.splitlines()
+    novas_linhas = []
+    for linha in linhas:
+        if re.match(r'^\s*\d+\s*$', linha):  # Linha contém apenas números (possivelmente página)
+            continue
+        novas_linhas.append(linha)
+    return '\n'.join(novas_linhas)
+
 def aplicar_formatacao(texto):
+    texto = remover_numeracao_avulsa(texto)  # Nova etapa
     texto = padronizar_capitulos(texto)
     texto = normalizar_caixa(texto)
     texto = separar_capitulos(texto)
@@ -869,6 +889,7 @@ def expandir_abreviacoes(texto):
 
 def melhorar_texto_corrigido(texto):
     texto = texto.replace('\f', '\n\n')  # Remove form feeds
+    texto = remover_numeracao_avulsa(texto) 
     import re
 
     def remover_num_paginas_rodapes(texto):
