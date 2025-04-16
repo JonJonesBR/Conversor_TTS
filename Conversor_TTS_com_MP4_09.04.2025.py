@@ -624,8 +624,9 @@ async def menu_principal() -> str:
     print("3. ⚡ MELHORAR ÁUDIO EXISTENTE")
     print("4. ❓ AJUDA")
     print("5. 🔄 ATUALIZAR")
-    print("6. 🚪 SAIR")
-    return await obter_opcao("\nOpção: ", ['1', '2', '3', '4', '5', '6'])
+    print("6. 🎬 CONVERTER MP3 PARA MP4")
+    print("7. 🚪 SAIR")
+    return await obter_opcao("\nOpção: ", ['1', '2', '3', '4', '5', '6', '7'])
 
 async def menu_vozes() -> str:
     """Exibe o menu de seleção de vozes e retorna a voz escolhida."""
@@ -656,6 +657,10 @@ async def exibir_ajuda() -> None:
    • Escolha entre 0.5x e 2.0x de velocidade
    • Converta para MP3 (áudio) ou MP4 (vídeo com tela preta)
    • Arquivos longos são automaticamente divididos
+
+6. CONVERTER MP3 PARA MP4:
+   • Gere vídeos com tela preta a partir de arquivos de áudio MP3
+   • Útil para publicar conteúdos de áudio em plataformas como YouTube
 
 ⚠️ OBSERVAÇÕES:
 • Para arquivos muito grandes, o processo pode demorar
@@ -1553,7 +1558,41 @@ async def main() -> None:
             await exibir_ajuda()
         elif opcao == '5':
             await atualizar_script()
+        elif opcao == '7':
+            print("\n👋 Obrigado por usar o Conversor TTS Completo!")
+            break
+            caminho = input('\nDigite o caminho do arquivo MP3: ').strip()
+            if os.path.isfile(caminho) and caminho.lower().endswith('.mp3'):
+                duracao = obter_duracao_ffprobe(caminho)
+                saida = os.path.splitext(caminho)[0] + '.mp4'
+                criar_video_com_audio(caminho, saida, duracao)
+                print(f'\n✅ Vídeo gerado: {saida}')
+            else:
+                print('\n❌ Caminho inválido ou não é um MP3')
+            input('\nPressione ENTER para continuar...')
         elif opcao == '6':
+            try:
+                caminho = input('\nDigite o caminho do arquivo MP3: ').strip()
+                if os.path.isfile(caminho) and caminho.lower().endswith('.mp3'):
+                    duracao = obter_duracao_ffprobe(caminho)
+                    saida = os.path.splitext(caminho)[0] + '.mp4'
+                    criar_video_com_audio(caminho, saida, duracao)
+                    print(f'\n✅ Vídeo gerado: {saida}')
+                else:
+                    print('\n❌ Caminho inválido ou não é um MP3')
+                input('\nPressione ENTER para continuar...')
+            except Exception as e:
+                print(f'\n❌ Erro inesperado: {str(e)}')
+                input('\nPressione ENTER para continuar...')
+            caminho = input('\nDigite o caminho do arquivo MP3: ').strip()
+            if os.path.isfile(caminho) and caminho.lower().endswith('.mp3'):
+                duracao = obter_duracao_ffprobe(caminho)
+                saida = os.path.splitext(caminho)[0] + '.mp4'
+                criar_video_com_audio(caminho, saida, duracao)
+                print(f'\n✅ Vídeo gerado: {saida}')
+            else:
+                print('\n❌ Caminho inválido ou não é um MP3')
+            input('\nPressione ENTER para continuar...')
             print("\n👋 Obrigado por usar o Conversor TTS Completo!")
             break
 
