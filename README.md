@@ -2,7 +2,7 @@
 
 # Conversor TTS – Texto para Fala em Português Brasileiro (PT-BR)
 
-Um script completo e eficiente para converter textos em arquivos de áudio (MP3), utilizando a tecnologia **Edge TTS** da Microsoft. Compatível com **Windows**, **Linux** e **Android (via Termux)**, este projeto foi desenvolvido para facilitar a conversão de textos longos com alta qualidade, recursos avançados de formatação e melhoria de áudio.
+## Um script completo e eficiente para converter textos em arquivos de áudio (MP3), utilizando a tecnologia **Edge TTS** da Microsoft. Compatível com **Windows**, **Linux** e **Android (via Termux)**, este projeto foi desenvolvido para facilitar a conversão de textos longos com alta qualidade, recursos avançados de formatação e melhoria de áudio.
 
 ---
 
@@ -25,7 +25,7 @@ Um script completo e eficiente para converter textos em arquivos de áudio (MP3)
 
 ## 🗂️ Suporte a Arquivos PDF e EPUB
 
-#### 🚨 ATENÇÃO:
+### 🚨 ATENÇÃO:
 
 > Caso na primeira tentativa de conversão de PDF ocorra erro, **aguarde a instalação automática do Poppler** e execute novamente a operação. Após isso, funcionará normalmente.
 
