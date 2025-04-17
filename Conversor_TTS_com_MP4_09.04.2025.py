@@ -1,3 +1,7 @@
+
+import html2text
+from bs4 import BeautifulSoup
+
 # === Início da integração do módulo de formatação ===
 import re
 
@@ -56,12 +60,11 @@ def remover_numeracao_avulsa(texto):
     return '\n'.join(novas_linhas)
 
 def aplicar_formatacao(texto):
-    texto = remover_numeracao_avulsa(texto)  # Nova etapa
+    texto = remover_numeracao_avulsa(texto)
     texto = padronizar_capitulos(texto)
     texto = normalizar_caixa(texto)
     texto = separar_capitulos(texto)
-    indice = gerar_indice(texto)
-    return indice + '\n\n' + texto
+    return texto
 
 
 # === Fim da integração ===
@@ -1174,6 +1177,61 @@ async def processar_melhorar_audio(arquivo):
     finally:
         CANCELAR_PROCESSAMENTO = True
 
+
+def extrair_texto_de_epub(caminho_arquivo: str) -> str:
+    """
+    Extrai o conteúdo textual de um arquivo EPUB, converte para texto plano,
+    aplica formatação e retorna o caminho do arquivo TXT final.
+    """
+    try:
+        print(f"\n📖 Extraindo conteúdo de: {caminho_arquivo}")
+        texto_extraido = ""
+        with zipfile.ZipFile(caminho_arquivo, 'r') as epub:
+            arquivos_html = [
+                f for f in epub.namelist()
+                if f.endswith(('.html', '.xhtml')) and not re.search(r'(toc|nav|cover)', f, re.IGNORECASE)
+            ]
+            arquivos_html.sort()
+
+            for nome_arquivo in arquivos_html:
+                with epub.open(nome_arquivo) as f:
+                    html_bytes = f.read()
+                    encoding_detectado = chardet.detect(html_bytes)['encoding'] or 'utf-8'
+                    try:
+                        html_texto = html_bytes.decode(encoding_detectado, errors='ignore')
+                    except Exception as e:
+                        print(f"❌ Erro ao decodificar {nome_arquivo}: {e}")
+                        continue
+
+                    soup = BeautifulSoup(html_texto, 'html.parser')
+                    for tag in soup(['nav', 'header', 'footer', 'style', 'script']):
+                        tag.decompose()
+
+                    corpo = soup.get_text(separator=' ', strip=True)
+                    if corpo:
+                        texto_convertido = html2text.html2text(corpo)
+                        texto_extraido += texto_convertido + "\n\n"
+
+        if not texto_extraido.strip():
+            print("⚠️ Nenhum conteúdo textual extraído do EPUB.")
+            return ""
+
+        nome_base = os.path.splitext(caminho_arquivo)[0]
+        caminho_txt_extraido = nome_base + "_extraido.txt"
+        with open(caminho_txt_extraido, 'w', encoding='utf-8') as f:
+            f.write(texto_extraido)
+
+        caminho_corrigido = verificar_e_corrigir_arquivo(caminho_txt_extraido)
+        texto_formatado = aplicar_formatacao(ler_arquivo_texto(caminho_corrigido))
+        caminho_formatado = nome_base + "_formatado.txt"
+        with open(caminho_formatado, 'w', encoding='utf-8') as f:
+            f.write(texto_formatado)
+
+        return caminho_formatado  # retorno do extrair_texto_de_epub
+    except Exception as e:
+        print(f"❌ Erro ao extrair texto do EPUB: {e}")
+        return ""
+
 # ================== FUNÇÕES DE LEITURA E PROCESSAMENTO DE ARQUIVOS ==================
 
 def detectar_encoding(caminho_arquivo: str) -> str:
@@ -1345,7 +1403,7 @@ async def selecionar_arquivo() -> str:
         print("\n📂 SELEÇÃO DE ARQUIVO")
         print(f"\nDiretório atual: {dir_atual}")
         print("\nArquivos disponíveis:")
-        arquivos = listar_arquivos(dir_atual, ['.txt', '.pdf'])
+        arquivos = listar_arquivos(dir_atual, ['.txt', '.pdf', '.epub'])
         if not arquivos:
             print("\n⚠️ Nenhum arquivo TXT ou PDF encontrado neste diretório")
         else:
@@ -1394,7 +1452,7 @@ async def selecionar_arquivo() -> str:
                 except Exception as e:
                     print(f'❌ Erro ao aplicar formatação: {e}')
                 caminho_txt = verificar_e_corrigir_arquivo(caminho_txt)
-                editar = (await aioconsole.ainput("\nDeseja editar o arquivo TXT corrigido? (s/n): ")).strip().lower()
+                editar = (await aioconsole.ainput("\nDeseja editar o arquivo TXT gerado? (s/n): ")).strip().lower()
                 if editar == 's':
                     if sistema['android']:
                         print("\nO arquivo TXT corrigido foi salvo no diretório padrão (normalmente Download).")
@@ -1428,7 +1486,7 @@ async def selecionar_arquivo() -> str:
                 return caminho
             else:
                 print(f"\n❌ Formato não suportado: {ext}")
-                print("💡 Apenas arquivos .txt e .pdf são suportados")
+                print("💡 Apenas arquivos .txt, .pdf e .epub são suportados")
                 await asyncio.sleep(1)
         elif escolha.isdigit():
             indice = int(escolha) - 1
@@ -1444,7 +1502,7 @@ async def selecionar_arquivo() -> str:
                         continue
                     # Corrige o TXT gerado, se necessário
                     caminho_txt = verificar_e_corrigir_arquivo(caminho_txt)
-                    editar = (await aioconsole.ainput("\nDeseja editar o arquivo TXT corrigido? (s/n): ")).strip().lower()
+                    editar = (await aioconsole.ainput("\nDeseja editar o arquivo TXT gerado? (s/n): ")).strip().lower()
                     if editar == 's':
                         if sistema['android']:
                             print("\nO arquivo TXT corrigido foi salvo no diretório padrão (normalmente Download).")
@@ -1464,6 +1522,59 @@ async def selecionar_arquivo() -> str:
                     if not os.path.basename(caminho_completo).lower().endswith("_formatado.txt"):
                         caminho_completo = verificar_e_corrigir_arquivo(caminho_completo)
                     return caminho_completo
+                elif ext == '.epub':
+                    caminho_formatado = extrair_texto_de_epub(caminho_completo)
+                    try:
+                        texto_extraido = ""
+                        with zipfile.ZipFile(caminho_completo, 'r') as epub:
+                            for nome_arquivo in epub.namelist():
+                                if nome_arquivo.endswith('.html') or nome_arquivo.endswith('.xhtml'):
+                                    with epub.open(nome_arquivo) as f:
+                                        html_bytes = f.read()
+                                        try:
+                                            html_texto = html_bytes.decode('utf-8')
+                                        except UnicodeDecodeError:
+                                            html_texto = html_bytes.decode('latin-1')
+                                        texto_extraido += html2text.html2text(html_texto) + "\n"
+                        nome_base = os.path.splitext(caminho_completo)[0]
+                        caminho_txt = nome_base + "_extraido.txt"
+                        with open(caminho_txt, 'w', encoding='utf-8') as f:
+                            f.write(texto_extraido)
+
+                        caminho_corrigido = verificar_e_corrigir_arquivo(caminho_txt)
+                        texto_formatado = aplicar_formatacao(ler_arquivo_texto(caminho_corrigido))
+                        caminho_formatado = nome_base + "_formatado.txt"
+                        with open(caminho_formatado, 'w', encoding='utf-8') as f:
+                            f.write(texto_formatado)
+
+                        editar = (await aioconsole.ainput("\nDeseja editar o arquivo TXT gerado? (s/n): ")).strip().lower()
+                        if editar == "s":
+                            if sistema["android"]:
+                                print("\nO arquivo TXT corrigido foi salvo no diretório padrão (normalmente Download).")
+                                print("Após editá-lo, reinicie a conversão selecionando-o novamente.")
+                                await aioconsole.ainput("\nPressione ENTER para continuar...")
+                                return ""
+                            else:
+                                if sistema["windows"]:
+                                    os.startfile(caminho_formatado)
+                                if sistema['windows']:
+                                    os.startfile(caminho_formatado)
+                                elif sistema['macos']:
+                                    subprocess.Popen(["open", caminho_formatado])
+                                else:
+                                    subprocess.Popen(["xdg-open", caminho_formatado])
+                                await aioconsole.ainput("\nPressione ENTER para continuar...")
+                                print("Edite o arquivo, salve e pressione ENTER para continuar...")
+                        return caminho_formatado  # retorno do extrair_texto_de_epub
+                    except Exception as e:
+                        print(f"❌ Erro ao processar EPUB (zip/html): {e}")
+                        await asyncio.sleep(2)
+                        return ''
+                    except Exception as e:
+                        print(f"\n❌ Erro ao processar EPUB: {str(e)}")
+                        await asyncio.sleep(2)
+                        return ''
+
                 else:
                     return caminho_completo
             else:
@@ -1613,41 +1724,9 @@ async def main() -> None:
             await menu_converter_mp3_para_mp4()
         elif opcao == '7':
             print("\n👋 Obrigado por usar o Conversor TTS Completo!")
-            break
-            caminho = input('\nDigite o caminho do arquivo MP3: ').strip()
-            if os.path.isfile(caminho) and caminho.lower().endswith('.mp3'):
-                duracao = obter_duracao_ffprobe(caminho)
-                saida = os.path.splitext(caminho)[0] + '.mp4'
-                criar_video_com_audio(caminho, saida, duracao)
-                print(f'\n✅ Vídeo gerado: {saida}')
-            else:
-                print('\n❌ Caminho inválido ou não é um MP3')
-            input('\nPressione ENTER para continuar...')
-        elif opcao == '6':
-            try:
-                caminho = input('\nDigite o caminho do arquivo MP3: ').strip()
-                if os.path.isfile(caminho) and caminho.lower().endswith('.mp3'):
-                    duracao = obter_duracao_ffprobe(caminho)
-                    saida = os.path.splitext(caminho)[0] + '.mp4'
-                    criar_video_com_audio(caminho, saida, duracao)
-                    print(f'\n✅ Vídeo gerado: {saida}')
-                else:
-                    print('\n❌ Caminho inválido ou não é um MP3')
-                input('\nPressione ENTER para continuar...')
-            except Exception as e:
-                print(f'\n❌ Erro inesperado: {str(e)}')
-                input('\nPressione ENTER para continuar...')
-            caminho = input('\nDigite o caminho do arquivo MP3: ').strip()
-            if os.path.isfile(caminho) and caminho.lower().endswith('.mp3'):
-                duracao = obter_duracao_ffprobe(caminho)
-                saida = os.path.splitext(caminho)[0] + '.mp4'
-                criar_video_com_audio(caminho, saida, duracao)
-                print(f'\n✅ Vídeo gerado: {saida}')
-            else:
-                print('\n❌ Caminho inválido ou não é um MP3')
-            input('\nPressione ENTER para continuar...')
-            print("\n👋 Obrigado por usar o Conversor TTS Completo!")
-            break
+            sys.exit(0)
+
+asyncio.run(main())
 
 if __name__ == "__main__":
     try:
@@ -1656,3 +1735,71 @@ if __name__ == "__main__":
         print("\n\n⚠️ Programa interrompido pelo usuário.")
     except Exception as e:
         print(f"\n❌ Erro inesperado: {str(e)}")
+
+
+# === Funções para EPUB adicionadas ===
+from bs4 import BeautifulSoup
+
+def convert_epub_to_txt(epub_path, output_path=None):
+    """
+    Converte um arquivo ePub para TXT
+    """
+    try:
+        # Verifica se o arquivo existe
+        if not os.path.exists(epub_path):
+            print(f"Erro: Arquivo '{epub_path}' não encontrado.")
+            return False
+        
+        # Define o nome do arquivo de saída
+        if output_path is None:
+            output_path = os.path.splitext(epub_path)[0] + ".txt"
+        
+        # Extrai o conteúdo do ePub (que é um arquivo zip)
+        with zipfile.ZipFile(epub_path, 'r') as epub:
+            # Encontra todos os arquivos HTML/XHTML no ePub
+            html_files = [f for f in epub.namelist() 
+                         if f.lower().endswith(('.html', '.xhtml', '.htm'))]
+            
+            # Ordena os arquivos para manter a ordem dos capítulos
+            html_files.sort()
+            
+            # Processa cada arquivo HTML
+            full_text = ""
+            for html_file in html_files:
+                with epub.open(html_file) as f:
+                    html_content = f.read().decode('utf-8')
+                    
+                    # Usa BeautifulSoup para limpar o HTML
+                    soup = BeautifulSoup(html_content, 'html.parser')
+                    
+                    # Remove scripts e estilos
+                    for script in soup(["script", "style"]):
+                        script.decompose()
+                    
+                    # Converte HTML para texto usando html2text
+                    h = html2text.HTML2Text()
+                    h.ignore_links = True
+                    h.ignore_images = True
+                    h.ignore_emphasis = True
+                    text = h.handle(str(soup))
+                    
+                    full_text += text + "\n\n"
+        
+        # Salva o texto em um arquivo
+        with open(output_path, 'w', encoding='utf-8') as f:
+            f.write(full_text)
+            
+        print(f"Conversão concluída! Arquivo salvo em: {output_path}")
+        return True
+        
+    except Exception as e:
+        print(f"Erro durante a conversão: {str(e)}")
+        return False
+    
+    epub_path = sys.argv[1]
+    output_path = sys.argv[2] if len(sys.argv) > 2 else None
+    
+    convert_epub_to_txt(epub_path, output_path)
+
+if __name__ == "__main__":
+    asyncio.run(menu_principal())
