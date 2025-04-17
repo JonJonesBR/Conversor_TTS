@@ -75,7 +75,7 @@ python Conversor_TTS_com_MP4_09.04.2025.py
 ```bash
 pkg update -y && pkg upgrade -y
 pkg install -y python git ffmpeg poppler termux-api unzip
-pip install --user edge-tts langdetect unidecode num2words chardet requests tqdm aioconsole
+pip install --user edge-tts langdetect unidecode num2words chardet requests tqdm aioconsole html2text beautifulsoup4
 termux-setup-storage
 ```
 
