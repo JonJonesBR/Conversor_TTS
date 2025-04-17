@@ -15,7 +15,6 @@
 - 🔢 **Conversão automática de números, ordinais e romanos para texto**
 - 📄 **Conversão integrada de arquivos PDF e EPUB para texto**
 - 📝 **Expansão de abreviações e símbolos especiais**
-- ⏸️ **Pausa e retomada automática em caso de interrupção**
 - 💾 **Salvamento automático na pasta Download**
 - ⚡ **Melhoria de áudio (aceleração, conversão, divisão em partes)**
 - 🎬 **Conversão de MP3 em vídeos MP4 com tela preta**
@@ -96,7 +95,7 @@ python Conversor_TTS_com_MP4_09.04.2025.py
 2. Execute o script
 3. Selecione a opção desejada no menu
 4. Escolha o arquivo e a voz
-5. O áudio será salvo automaticamente na mesma pasta
+5. O áudio será salvo automaticamente em uma pasta com o nome dele na pasta Download
 
 ---
 
@@ -120,9 +119,8 @@ python Conversor_TTS_com_MP4_09.04.2025.py
 
 ### 🔄 Controle de conversão
 
-- Pausar e retomar automaticamente em caso de falha  
-- Escolha entre gerar **um único arquivo** ou **um por parágrafo**  
-- Áudios com mais de 12 horas são automaticamente divididos  
+- Acelerar ou reduzir velocidade de leitura do áudio ao final da conversão e através do menu inicial 
+- Áudios com mais de 12 horas são automaticamente divididos e cada um terá no máximo 12 horas (para upload no YouTube)
 - Geração de vídeos MP4 com tela preta a partir de MP3
 
 ---
