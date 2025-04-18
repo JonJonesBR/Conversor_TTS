@@ -4,51 +4,22 @@ from bs4 import BeautifulSoup
 # === Início da integração do módulo de formatação ===
 import re
 
-def padronizar_capitulos(texto):
-    conversao_manual = {
-        'UM': 1, 'UMI': 2, 'UMII': 3, 'UMIII': 4, 'UMIV': 5, 'UMV': 6, 'UMVI': 7,
-        'CINCO': 5, 'CINCOI': 6, 'CINCOII': 7, 'CINCOIII': 8, 'CINCOIV': 9, 'CINCOV': 10,
-        'UMX': 9, 'DEZ': 10, 'DEZI': 11, 'ONZE': 11, 'DOZE': 12
-    }
-
-    def substituidor(match):
-        capitulo = match.group(1).strip().upper()
-        titulo = match.group(2).strip()
-        numero = conversao_manual.get(capitulo, capitulo)
-        return f"CAPÍTULO {numero}: {titulo.title()}"
-
-    padrao = re.compile(r'CAP[IÍ]TULO\s+([A-Z0-9]+)\s*[:\-]?\s*(.+)', re.IGNORECASE)
-    texto_formatado = padrao.sub(substituidor, texto)
-    return texto_formatado
-
-def normalizar_caixa(texto):
-    linhas = texto.splitlines()
-    texto_final = []
-    for linha in linhas:
-        if linha.isupper() and len(linha.strip()) > 3:
-            texto_final.append(linha.capitalize())
-        else:
-            texto_final.append(linha)
-    return "\n".join(texto_final)
-
 def separar_capitulos(texto):
     """
-    Ajusta a marcação dos capítulos para:
-    'CAPÍTULO 1.' (com ponto final e duas quebras de linha antes e depois).
+    Localiza títulos como 'Capítulo 1 Mesmo em pleno verão...' e converte para:
+
+    'CAPÍTULO 1.\n\nMesmo em pleno verão...'
     """
-    # Padrão para encontrar "Capítulo" ou "CAPÍTULO" seguido de número (com ou sem :)
     padrao = re.compile(
-        r'(CAP[IÍ]TULO\s+\d+)\s*:?\s*',
-        flags=re.IGNORECASE
+        r'(?i)(cap[íi]tulo)\s+(\d+|[ivxlcdm]+)\s*[:\-]?\s*(?=\S)([^\n]*)'
     )
-    
-    # Substitui por "\n\nCAPÍTULO X.\n\n" (mantendo maiúsculas e adicionando ponto)
-    texto_formatado = padrao.sub(
-        lambda m: f"\n\n{m.group(1).upper()}.\n\n",
-        texto
-    )
-    
-    return texto_formatado
+
+    def substituir(match):
+        cabecalho = f"{match.group(1).upper()} {match.group(2).upper()}."
+        conteudo = match.group(3).strip()
+        return f"\n\n{cabecalho}\n\n{conteudo}"
+
+    return padrao.sub(substituir, texto)
 
 def remover_numeracao_avulsa(texto):
     """
@@ -62,19 +33,64 @@ def remover_numeracao_avulsa(texto):
         novas_linhas.append(linha)
     return '\n'.join(novas_linhas)
 
+def padronizar_capitulos(texto):
+    """
+    Converte capítulos escritos por extenso ou misturados (ex: "CAPÍTULO UM", "CAPÍTULO CINCO") para numéricos.
+    """
+    conversao_manual = {
+        'UM': '1', 'DOIS': '2', 'TRÊS': '3', 'QUATRO': '4', 'CINCO': '5', 'SEIS': '6',
+        'SETE': '7', 'OITO': '8', 'NOVE': '9', 'DEZ': '10', 'ONZE': '11', 'DOZE': '12',
+        'TREZE': '13', 'CATORZE': '14', 'QUINZE': '15', 'DEZESSEIS': '16', 'DEZESSETE': '17',
+        'DEZOITO': '18', 'DEZENOVE': '19', 'VINTE': '20'
+    }
+
+    def substituidor(match):
+        capitulo = match.group(1).strip().upper()
+        titulo = match.group(2).strip()
+        numero = conversao_manual.get(capitulo, capitulo)
+        return f"CAPÍTULO {numero}: {titulo.title()}"
+
+    padrao = re.compile(r'CAP[IÍ]TULO\s+([A-ZÇÉÊÓÃÕ]+)\s*[:\-]?\s*(.+)', re.IGNORECASE)
+    return padrao.sub(substituidor, texto)
+
+def normalizar_caixa(texto):
+    """
+    Converte linhas completamente em maiúsculas para formato capitalizado.
+    """
+    linhas = texto.splitlines()
+    texto_final = []
+    for linha in linhas:
+        if linha.isupper() and len(linha.strip()) > 3:
+            texto_final.append(linha.capitalize())
+        else:
+            texto_final.append(linha)
+    return "\n".join(texto_final)
+
 def aplicar_formatacao(texto):
+    """
+    Aplica formatação geral ao texto para melhorar leitura e compatibilidade com TTS:
+    - Remove numeração de páginas
+    - Padroniza capítulos
+    - Normaliza caixa
+    - Quebras de linha adequadas após ponto final
+    - Separação visual dos capítulos
+    """
     texto = remover_numeracao_avulsa(texto)
     texto = padronizar_capitulos(texto)
     texto = normalizar_caixa(texto)
-    
-    # Remover quebras de linha excessivas (exceto após pontos finais)
-    texto = re.sub(r'(?<!\n)\n(?!\n|\.\s*)', ' ', texto)  # Remove quebras de linha únicas
-    texto = re.sub(r'\n{3,}', '\n\n', texto)  # Limita múltiplas quebras para no máximo duas
-    
-    # Garantir que haja quebras de linha apenas após pontos finais
-    texto = re.sub(r'\.\s+', '.\n\n', texto)  # Quebra após pontos finais
-    
+
+    # Remover quebras de linha únicas (exceto após ponto)
+    texto = re.sub(r'(?<!\n)\n(?!\n|\.\s*)', ' ', texto)
+
+    # Limita quebras múltiplas para no máximo duas
+    texto = re.sub(r'\n{3,}', '\n\n', texto)
+
+    # Garante quebra após ponto final
+    texto = re.sub(r'\.\s+', '.\n\n', texto)
+
+    # Isola corretamente os títulos de capítulos
     texto = separar_capitulos(texto)
+
     return texto
 
 
