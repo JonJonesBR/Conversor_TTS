@@ -1,4 +1,3 @@
-
 import html2text
 from bs4 import BeautifulSoup
 
@@ -63,6 +62,14 @@ def aplicar_formatacao(texto):
     texto = remover_numeracao_avulsa(texto)
     texto = padronizar_capitulos(texto)
     texto = normalizar_caixa(texto)
+    
+    # Remover quebras de linha excessivas (exceto após pontos finais)
+    texto = re.sub(r'(?<!\n)\n(?!\n|\.\s*)', ' ', texto)  # Remove quebras de linha únicas
+    texto = re.sub(r'\n{3,}', '\n\n', texto)  # Limita múltiplas quebras para no máximo duas
+    
+    # Garantir que haja quebras de linha apenas após pontos finais
+    texto = re.sub(r'\.\s+', '.\n\n', texto)  # Quebra após pontos finais
+    
     texto = separar_capitulos(texto)
     return texto
 
@@ -834,7 +841,20 @@ def ajustar_titulo_e_capitulos_corrigir(texto):
 def inserir_quebra_apos_ponto_corrigir(texto):
     """Insere uma quebra de parágrafo após cada ponto final."""
     print("[4/5] Inserindo quebra de parágrafo após cada ponto final...")
+    
+    # Primeiro normaliza espaços em branco e quebras existentes
+    texto = re.sub(r'\s+', ' ', texto)  # Substitui múltiplos espaços por um único
+    texto = re.sub(r'(?<!\n)\n(?!\n)', ' ', texto)  # Remove quebras de linha isoladas
+    
+    # Insere quebras de parágrafo apenas após pontos finais
     texto = re.sub(r'\.\s+', '.\n\n', texto)
+    
+    # Remove possíveis múltiplas quebras criadas
+    texto = re.sub(r'\n{3,}', '\n\n', texto)
+    
+    # Garante que não haja espaços antes de quebras
+    texto = re.sub(r' +\n', '\n', texto)
+    
     return texto
 
 def formatar_paragrafos_corrigir(texto):
@@ -892,9 +912,16 @@ def expandir_abreviacoes(texto):
 
 def melhorar_texto_corrigido(texto):
     texto = texto.replace('\f', '\n\n')  # Remove form feeds
-    texto = remover_numeracao_avulsa(texto) 
-    import re
-
+    texto = remover_numeracao_avulsa(texto)
+    
+    # Remover quebras de linha excessivas (exceto após pontos finais)
+    texto = re.sub(r'(?<!\n)\n(?!\n|\.\s*)', ' ', texto)  # Remove quebras de linha únicas
+    texto = re.sub(r'\n{3,}', '\n\n', texto)  # Limita múltiplas quebras para no máximo duas
+    
+    # Garantir quebras de linha apenas após pontos finais
+    texto = re.sub(r'\.\s+', '.\n\n', texto)
+    
+    # Funções auxiliares mantidas conforme original
     def remover_num_paginas_rodapes(texto):
         return re.sub(r'\n?\s*\d+\s+cda_pr_.*?\.indd\s+\d+\s+\d+/\d+/\d+\s+\d+:\d+\s+[APM]{2}', '', texto)
 
@@ -920,6 +947,24 @@ def melhorar_texto_corrigido(texto):
         for original, novo in substituicoes.items():
             texto = texto.replace(original, novo)
         return texto
+
+    # Aplicar as funções auxiliares
+    texto = remover_num_paginas_rodapes(texto)
+    texto = corrigir_hifenizacao(texto)
+    texto = remover_infos_bibliograficas_rodape(texto)
+    texto = converter_capitulos_para_extenso_simples(texto)
+    
+    # Garantir que cada parágrafo termine com pontuação
+    paragrafos = texto.split('\n\n')
+    paragrafos_corrigidos = []
+    for p in paragrafos:
+        p = p.strip()
+        if p and not re.search(r'[.!?…]$', p):
+            p += '.'
+        paragrafos_corrigidos.append(p)
+    texto = '\n\n'.join(paragrafos_corrigidos)
+    
+    return texto
 
     def pontuar_finais_de_paragrafo(texto):
         paragrafos = texto.split('\n\n')
