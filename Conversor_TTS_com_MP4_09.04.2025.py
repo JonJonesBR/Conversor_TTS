@@ -34,17 +34,21 @@ def normalizar_caixa(texto):
 def separar_capitulos(texto):
     """
     Ajusta a marcação dos capítulos para:
-    'Capítulo 1.' (com ponto final e duas quebras de linha antes e depois).
+    'CAPÍTULO 1.' (com ponto final e duas quebras de linha antes e depois).
     """
-    return re.sub(
-        r'(CAP[IÍ]TULO\s+\d+)(:)?',
-        lambda m: f"\n\n{m.group(1).upper()}.\n\n",
-        texto,
+    # Padrão para encontrar "Capítulo" ou "CAPÍTULO" seguido de número (com ou sem :)
+    padrao = re.compile(
+        r'(CAP[IÍ]TULO\s+\d+)\s*:?\s*',
         flags=re.IGNORECASE
     )
-    return "\n".join([
-        f"{match.group(1)}. {match.group(2).title()}" for match in padrao.finditer(texto)
-    ])
+    
+    # Substitui por "\n\nCAPÍTULO X.\n\n" (mantendo maiúsculas e adicionando ponto)
+    texto_formatado = padrao.sub(
+        lambda m: f"\n\n{m.group(1).upper()}.\n\n",
+        texto
+    )
+    
+    return texto_formatado
 
 def remover_numeracao_avulsa(texto):
     """
