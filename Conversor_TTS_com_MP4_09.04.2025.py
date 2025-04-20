@@ -1075,24 +1075,40 @@ def criar_video_com_audio(audio_path, video_path, duracao):
 
 def dividir_em_partes(input_path, duracao_total, duracao_maxima, nome_base_saida, extensao):
     """Divide um arquivo de mídia em partes menores."""
+    # Verifica se precisa dividir
+    if duracao_total <= duracao_maxima:
+        print(f"    O arquivo tem {duracao_total/3600:.2f} horas e não precisa ser dividido.")
+        return
+    
+    print(f"\n    O arquivo tem {duracao_total/3600:.2f} horas e será dividido em partes de até {duracao_maxima/3600:.0f} horas.")
+    
     partes = ceil(duracao_total / duracao_maxima)
     for i in range(partes):
+        if CANCELAR_PROCESSAMENTO:
+            print("    Divisão cancelada pelo usuário.")
+            return
+            
         inicio = i * duracao_maxima
         duracao = min(duracao_maxima, duracao_total - inicio)
-
         output_path = f"{nome_base_saida}_parte{i+1}{extensao}"
 
+        print(f"    Criando parte {i+1}/{partes} ({duracao/3600:.2f}h)...")
+        
         comando = [
             FFMPEG_BIN,
             '-y',
             '-i', input_path,
-            '-ss', str(int(inicio)),
-            '-t', str(int(duracao)),
+            '-ss', str(inicio),
+            '-t', str(duracao),
             '-c', 'copy',
             output_path
         ]
-        subprocess.run(comando, check=True)
-        print(f"    Parte {i+1} criada: {output_path}")
+        try:
+            subprocess.run(comando, check=True)
+            print(f"    Parte {i+1} criada: {output_path}")
+        except subprocess.CalledProcessError as e:
+            print(f"    ❌ Erro ao criar parte {i+1}: {e}")
+            continue
 
 async def menu_melhorar_audio():
     """Menu para melhorar arquivos de áudio/vídeo existentes."""
@@ -1195,11 +1211,23 @@ async def processar_melhorar_audio(arquivo):
             else:
                 print("Formato inválido. Digite 'mp3' ou 'mp4'.")
 
+        # Opção de tamanho personalizado para divisão
+        duracao_maxima = LIMITE_SEGUNDOS
+        personalizado = (await aioconsole.ainput("\nDeseja definir tamanho personalizado para divisão? (padrão: 12 horas) [s/n]: ")).strip().lower()
+        if personalizado == 's':
+            try:
+                horas = float((await aioconsole.ainput("Quantas horas por parte? (max 12): ")).strip())
+                duracao_maxima = min(horas * 3600, LIMITE_SEGUNDOS)
+                print(f"    Partes serão de até {duracao_maxima/3600:.1f} horas")
+            except ValueError:
+                print("    Valor inválido. Usando padrão de 12 horas.")
+                duracao_maxima = LIMITE_SEGUNDOS
+
         # Normaliza nome de saída
         nome_saida_base = f"{nome_base}_x{velocidade}".replace(".", "_")
-        nome_saida_base = re.sub(r'_+', '_', nome_saida_base)  # Remove underlines duplos
+        nome_saida_base = re.sub(r'_+', '_', nome_saida_base)
 
-        # Cria diretório de saída, se necessário
+        # Cria diretório de saída
         Path(os.path.dirname(nome_saida_base)).mkdir(parents=True, exist_ok=True)
 
         temp_audio = f"{nome_saida_base}_temp_audio.mp3"
@@ -1213,7 +1241,7 @@ async def processar_melhorar_audio(arquivo):
 
         extensao_final = ".mp4" if formato == "mp4" else ".mp3"
 
-        if duracao <= LIMITE_SEGUNDOS:
+        if duracao <= duracao_maxima:
             saida_final = f"{nome_saida_base}{extensao_final}"
             if formato == "mp4":
                 print("    Gerando vídeo com tela preta...")
@@ -1221,18 +1249,18 @@ async def processar_melhorar_audio(arquivo):
                 os.remove(temp_audio)
             else:
                 os.rename(temp_audio, saida_final)
-            print(f"    Arquivo final salvo: {saida_final}")
+            print(f"\n✅ Arquivo final salvo: {saida_final}")
         else:
-            print("    Dividindo em partes de até 12 horas...")
+            print("\n🔀 Dividindo arquivo em partes...")
             if formato == "mp4":
                 video_completo = f"{nome_saida_base}_video.mp4"
                 criar_video_com_audio(temp_audio, video_completo, duracao)
-                dividir_em_partes(video_completo, duracao, LIMITE_SEGUNDOS, nome_saida_base, ".mp4")
+                dividir_em_partes(video_completo, duracao, duracao_maxima, nome_saida_base, ".mp4")
                 os.remove(video_completo)
             else:
-                dividir_em_partes(temp_audio, duracao, LIMITE_SEGUNDOS, nome_saida_base, ".mp3")
+                dividir_em_partes(temp_audio, duracao, duracao_maxima, nome_saida_base, ".mp3")
             os.remove(temp_audio)
-            print("    Arquivos divididos com sucesso.")
+            print("\n✅ Arquivos divididos com sucesso.")
 
         await aioconsole.ainput("\nPressione ENTER para continuar...")
 
