@@ -702,11 +702,16 @@ async def menu_principal() -> str:
     print("1. 🚀 CONVERTER TEXTO PARA ÁUDIO")
     print("2. 🎙️ TESTAR VOZES")
     print("3. ⚡ MELHORAR ÁUDIO EXISTENTE")
-    print("4. ❓ AJUDA")
-    print("5. 🔄 ATUALIZAR")
-    print("6. 🎬 CONVERTER MP3 PARA MP4")
-    print("7. 🚪 SAIR")
-    return await obter_opcao("\nOpção: ", ['1', '2', '3', '4', '5', '6', '7'])
+    print("4. ✂️ DIVIDIR VÍDEO MP4")
+    print("5. ❓ AJUDA")
+    print("6. 🔄 ATUALIZAR")
+    print("7. 🎬 CONVERTER MP3 PARA MP4")
+    print("8. 🚪 SAIR")
+    return await obter_opcao("\nOpção: ", ['1', '2', '3', '4', '5', '6', '7', '8'])
+
+def listar_videos_mp4(directory):
+    """Lista arquivos MP4 no diretório especificado"""
+    return [f for f in os.listdir(directory) if f.lower().endswith('.mp4')]
 
 async def menu_vozes() -> str:
     """Exibe o menu de seleção de vozes e retorna a voz escolhida."""
@@ -737,6 +742,11 @@ async def exibir_ajuda() -> None:
    • Escolha entre 0.5x e 2.0x de velocidade
    • Converta para MP3 (áudio) ou MP4 (vídeo com tela preta)
    • Arquivos longos são automaticamente divididos
+
+4. DIVIDIR VÍDEO MP4:
+   • Divida vídeos longos em partes de até 12 horas
+   • Útil para processar vídeos muito grandes
+   • Mantém a qualidade original (sem re-encoding)
 
 6. CONVERTER MP3 PARA MP4:
    • Gere vídeos com tela preta a partir de arquivos de áudio MP3
@@ -1109,6 +1119,127 @@ def dividir_em_partes(input_path, duracao_total, duracao_maxima, nome_base_saida
         except subprocess.CalledProcessError as e:
             print(f"    ❌ Erro ao criar parte {i+1}: {e}")
             continue
+
+async def menu_dividir_video():
+    """Menu para dividir vídeos MP4 em partes menores"""
+    await exibir_banner()
+    print("\n✂️ DIVIDIR VÍDEO MP4")
+    
+    DOWNLOADS_DIR = "/storage/emulated/0/Download"
+    MAX_DURATION_HOURS = 12
+    
+    if not os.path.exists(DOWNLOADS_DIR):
+        print("\n❌ Pasta Download não encontrada!")
+        print("Certifique-se de que o Termux tem permissão para acessar o armazenamento.")
+        print("Execute no Termux: termux-setup-storage")
+        await aioconsole.ainput("\nPressione Enter para continuar...")
+        return
+    
+    while True:
+        limpar_tela()
+        print("=== DIVISOR DE VÍDEOS MP4 ===")
+        print("\nArquivos MP4 encontrados na pasta Download:\n")
+        
+        files = listar_videos_mp4(DOWNLOADS_DIR)
+        
+        if not files:
+            print("Nenhum arquivo MP4 encontrado.")
+            print("\nPor favor, coloque os vídeos na pasta /storage/emulated/0/Download")
+            await aioconsole.ainput("\nPressione Enter para sair...")
+            return
+        
+        for i, file in enumerate(files, 1):
+            print(f"{i}. {file}")
+        
+        print("\n0. Voltar")
+        
+        try:
+            choice = (await aioconsole.ainput("\nSelecione o arquivo pelo número: ")).strip()
+            
+            if choice == '0':
+                return
+                
+            if not choice.isdigit() or int(choice) < 1 or int(choice) > len(files):
+                print("\nOpção inválida!")
+                await asyncio.sleep(1)
+                continue
+                
+            selected_file = files[int(choice)-1]
+            file_path = os.path.join(DOWNLOADS_DIR, selected_file)
+            
+            # Obter duração do vídeo
+            cmd = f"ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 '{file_path}'"
+            try:
+                duration = float(subprocess.check_output(cmd, shell=True).decode().strip())
+                hours = int(duration // 3600)
+                minutes = int((duration % 3600) // 60)
+                seconds = int(duration % 60)
+                
+                print(f"\nArquivo selecionado: {selected_file}")
+                print(f"Duração: {hours}h {minutes}m {seconds}s")
+                
+                confirm = (await aioconsole.ainput("\nDeseja dividir este vídeo? (s/n): ")).lower()
+                if confirm != 's':
+                    continue
+                    
+                # Criar pasta de saída
+                filename = os.path.splitext(selected_file)[0]
+                output_dir = os.path.join(DOWNLOADS_DIR, f"{filename}_partes")
+                os.makedirs(output_dir, exist_ok=True)
+                
+                max_duration = MAX_DURATION_HOURS * 3600
+                
+                if duration <= max_duration:
+                    print("\nO vídeo não precisa ser dividido (duração menor que 12h).")
+                    await aioconsole.ainput("\nPressione Enter...")
+                    continue
+                
+                num_parts = int(duration // max_duration) + 1
+                print(f"\nDividindo vídeo de {duration/3600:.2f} horas em {num_parts} partes...")
+                
+                for i in range(num_parts):
+                    start_time = i * max_duration
+                    end_time = min((i + 1) * max_duration, duration)
+                    output_path = os.path.join(output_dir, f"{filename}_part{i+1}.mp4")
+                    
+                    print(f"\nProcessando parte {i+1}/{num_parts}...")
+                    
+                    # Comando FFmpeg para cortar o vídeo
+                    cmd = (
+                        f"ffmpeg -i '{file_path}' -ss {start_time} -to {end_time} "
+                        f"-c:v copy -c:a copy '{output_path}' -y"
+                    )
+                    
+                    # Executar e mostrar progresso
+                    process = subprocess.Popen(cmd, shell=True, stderr=subprocess.PIPE)
+                    
+                    # Exibir progresso
+                    while True:
+                        output = process.stderr.readline().decode()
+                        if output == '' and process.poll() is not None:
+                            break
+                        if 'time=' in output:
+                            print(output.split('time=')[1].split(' ')[0], end='\r')
+                    
+                    if process.returncode != 0:
+                        print("\nErro durante a divisão!")
+                        break
+                        
+                    print(f"\nParte {i+1} salva: {output_path}")
+                
+                print("\nDivisão concluída com sucesso!")
+                await aioconsole.ainput("\nPressione Enter para continuar...")
+                
+            except Exception as e:
+                print(f"\nErro ao obter duração do vídeo: {e}")
+                await aioconsole.ainput("\nPressione Enter para continuar...")
+                
+        except (ValueError, IndexError):
+            print("\nSeleção inválida!")
+            await asyncio.sleep(1)
+        except KeyboardInterrupt:
+            print("\nOperação cancelada.")
+            return
 
 async def menu_melhorar_audio():
     """Menu para melhorar arquivos de áudio/vídeo existentes."""
@@ -1810,12 +1941,14 @@ async def main() -> None:
         elif opcao == '3':
             await menu_melhorar_audio()
         elif opcao == '4':
-            await exibir_ajuda()
+            await menu_dividir_video()
         elif opcao == '5':
-            await atualizar_script()
+            await exibir_ajuda()
         elif opcao == '6':
-            await menu_converter_mp3_para_mp4()
+            await atualizar_script()
         elif opcao == '7':
+            await menu_converter_mp3_para_mp4()
+        elif opcao == '8':
             print("\n👋 Obrigado por usar o Conversor TTS Completo!")
             sys.exit(0)
 
