@@ -152,8 +152,27 @@ CANCELAR_PROCESSAMENTO = False
 FFMPEG_BIN = "ffmpeg"
 FFPROBE_BIN = "ffprobe"
 LIMITE_SEGUNDOS = 43200  # 12 horas para divisão de arquivos longos
+# === Escolhas de resolução para o submenu de vídeo ===
+# === Escolhas de resolução para o submenu de vídeo ===
+RESOLUCOES_VIDEO = {
+    '1': ('640x360', '360p'),
+    '2': ('854x480', '480p'),
+    '3': ('1280x720', '720p (mais processamento e maior arquivo)')
+}
 
-# ================== FUNÇÕES DE UTILIDADE E SISTEMA ==================
+async def escolher_resolucao():
+    """
+    Apresenta submenu de resoluções e retorna string 'LARGExALTO' escolhida.
+    """
+    print("\nSelecione a resolução do vídeo (quanto maior, mais processamento e tamanho de arquivo):")
+    for chave, (_, descricao) in RESOLUCOES_VIDEO.items():
+        print(f"  {chave}. {descricao}")
+    escolha = await aioconsole.ainput("\nOpção [1-3]: ")
+    if escolha not in RESOLUCOES_VIDEO:
+        print("Opção inválida. Será usada resolução 360p.")
+        escolha = '1'
+    largura_alto, _ = RESOLUCOES_VIDEO[escolha]
+    return largura_alto
 
 def handler_sinal(signum, frame):
     global CANCELAR_PROCESSAMENTO
@@ -598,9 +617,18 @@ async def menu_converter_mp3_para_mp4():
     caminho_mp3 = os.path.join(dir_download, arquivo_escolhido)
 
     try:
+        # 1) Obtém duração do MP3
         duracao = obter_duracao_ffprobe(caminho_mp3)
+
+        # 2) Pergunta ao usuário qual resolução deseja
+        resolucao = await escolher_resolucao()
+
+        # 3) Monta o nome do arquivo de saída
         saida_mp4 = os.path.splitext(caminho_mp3)[0] + ".mp4"
-        criar_video_com_audio(caminho_mp3, saida_mp4, duracao)
+
+        # 4) Chama a função com o parâmetro de resolução
+        criar_video_com_audio(caminho_mp3, saida_mp4, duracao, resolucao)
+
         print(f"\n✅ Vídeo gerado com sucesso: {saida_mp4}")
     except Exception as e:
         print(f"\n❌ Erro ao gerar vídeo: {e}")
@@ -1066,19 +1094,34 @@ def acelerar_audio(input_path, output_path, velocidade):
     ]
     subprocess.run(comando, check=True)
 
-def criar_video_com_audio(audio_path, video_path, duracao):
-    """Cria um vídeo com tela preta a partir de um arquivo de áudio."""
+def criar_video_com_audio(audio_path, video_path, duracao, resolucao):
+    """
+    Cria um vídeo com tela preta a partir de um MP3,
+    usando a resolução 'resolucao' e buffers ampliados para evitar ENOSPC.
+    """
     comando = [
         FFMPEG_BIN,
         '-y',
+        '-threads', '0',
+
+        # Vídeo preto
         '-f', 'lavfi',
-        '-i', f"color=c=black:s=1280x720:d={int(duracao)}",
+        '-i', f"color=c=black:s={resolucao}:d={int(duracao)}",
+
+        # Aumenta tamanho da fila de buffer de entrada de áudio
+        '-thread_queue_size', '512',
         '-i', audio_path,
+
         '-shortest',
-        '-c:v', 'libx264',
-        '-c:a', 'aac',
-        '-b:a', '192k',
+
+        # Aumenta fila interna de muxing
+        '-max_muxing_queue_size', '1024',
+
+        # Codecs
+        '-c:v', 'libx264', '-preset', 'ultrafast', '-tune', 'zerolatency',
+        '-c:a', 'aac', '-b:a', '128k',
         '-pix_fmt', 'yuv420p',
+
         video_path
     ]
     subprocess.run(comando, check=True)
