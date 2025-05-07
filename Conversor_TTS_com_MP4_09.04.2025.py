@@ -324,24 +324,26 @@ def formatar_texto_para_tts(texto_bruto: str) -> str:
     for char in caracteres_para_substituir:
         texto = texto.replace(char, ' ')
     
-    # === NOVA ETAPA: Remover parênteses ( e ) ===
-    # Substitui por nada, efetivamente removendo-os
+    # === Remover parênteses ( e ) === (mantido)
     texto = texto.replace('(', '')
     texto = texto.replace(')', '')
-    # ============================================
+
+    # === NOVA ETAPA: Remover barra invertida \ ===
+    texto = texto.replace('\\', '') 
+    # ===========================================
 
     # === Remover QUALQUER coisa dentro de {} === (mantido)
     texto = re.sub(r'\{.*?\}', '', texto)
     # =========================================================
 
     # 1. Pré-limpeza de caracteres estranhos e espaços excessivos (mantido)
+    # ... (resto do código da função inalterado) ...
     texto = re.sub(r'[ \t]+', ' ', texto) 
     texto = "\n".join([linha.strip() for linha in texto.splitlines()])
     texto = re.sub(r'(?<=\w)\s*\](?=\s|$|\n)', '', texto) 
     texto = re.sub(r'\[\s*(?=\w)', '', texto)            
 
     # 2. TRATAMENTO DE QUEBRAS DE LINHA DENTRO DE PARÁGRAFOS (mantido)
-    # ... (código inalterado para juntar linhas) ...
     paragrafos_originais = texto.split('\n\n')
     paragrafos_processados = []
     for paragrafo_bruto in paragrafos_originais:
@@ -364,36 +366,29 @@ def formatar_texto_para_tts(texto_bruto: str) -> str:
     texto = '\n\n'.join(paragrafos_processados)
 
     # 3. Limpeza de espaços e quebras (mantido)
-    # ... (código inalterado) ...
     texto = re.sub(r'[ \t]+', ' ', texto)
     texto = re.sub(r'\s*\n\s*', '\n', texto)
     texto = re.sub(r'\n{3,}', '\n\n', texto)
 
     # Etapas originais de formatação (mantidas)
-    # ... (código inalterado) ...
     texto = _remover_metadados_pdf(texto)
     texto = _remover_numeros_pagina_isolados(texto)
     texto = _corrigir_hifenizacao_quebras(texto) 
     texto = _formatar_numeracao_capitulos(texto)
 
     # Quebra de parágrafo após pontuação final (mantido)
-    # ... (código inalterado) ...
     texto = re.sub(r'([.!?…])\s*(?!\n\n|\n?$)', r'\1\n\n', texto)
 
     # Normalização de caixa (mantido)
-    # ... (código inalterado) ...
     texto = _normalizar_caixa_alta_linhas(texto)
 
     # Conversão de ordinais (mantido)
-    # ... (código inalterado) ...
     texto = _converter_ordinais_para_extenso(texto) 
 
     # Expansões de abreviações e números cardinais (mantido)
-    # ... (código inalterado) ...
     texto = _expandir_abreviacoes_numeros(texto) 
 
     # 5. Pós-processamento final de parágrafos (mantido)
-    # ... (código inalterado) ...
     paragrafos_finais = texto.split('\n\n')
     paragrafos_formatados_final = []
     for p in paragrafos_finais:
@@ -411,7 +406,6 @@ def formatar_texto_para_tts(texto_bruto: str) -> str:
     texto = '\n\n'.join(paragrafos_formatados_final)
 
     # Última limpeza (mantido)
-    # ... (código inalterado) ...
     texto = re.sub(r'[ \t]+', ' ', texto).strip()
     texto = re.sub(r'\n{3,}', '\n\n', texto)
     texto = re.sub(r'(\s*\n){2,}\s*', '\n\n', texto)
@@ -1083,54 +1077,58 @@ async def _processar_arquivo_selecionado_para_texto(caminho_arquivo_orig: str) -
 async def _converter_chunk_tts(texto_chunk: str, voz: str, caminho_saida_temp: str, indice_chunk: int, total_chunks: int) -> bool:
     """Converte um único chunk de texto para áudio, pulando se já existir e for válido."""
     global CANCELAR_PROCESSAMENTO
-    
-    # --- INÍCIO DA VERIFICAÇÃO DE ARQUIVO EXISTENTE ---
     path_saida_obj = Path(caminho_saida_temp)
-    if path_saida_obj.exists() and path_saida_obj.stat().st_size > 200: # 200 bytes como um mínimo para um MP3 válido
-        # Não precisa imprimir sempre, pode poluir o log para muitos arquivos.
-        # Apenas se desejar um feedback explícito de que pulou.
-        # print(f"⏭️  Chunk {indice_chunk}/{total_chunks} já convertido e válido. Pulando.")
-        return True # Considera como sucesso, pois o arquivo já existe e é válido
-    # --- FIM DA VERIFICAÇÃO DE ARQUIVO EXISTENTE ---
+
+    # Verificação de arquivo existente (mantida)
+    if path_saida_obj.exists() and path_saida_obj.stat().st_size > 200:
+        return True 
 
     tentativas = 0
     while tentativas < MAX_TTS_TENTATIVAS:
         if CANCELAR_PROCESSAMENTO: return False
+        
+        # Limpa arquivo anterior antes de tentar (se existir e for inválido)
+        path_saida_obj.unlink(missing_ok=True) 
+        
         try:
             if not texto_chunk or not texto_chunk.strip():
-                print(f"⚠️ Chunk {indice_chunk}/{total_chunks} vazio ou inválido, pulando (interno).")
-                path_saida_obj.unlink(missing_ok=True) # Remove se existir um inválido
+                print(f"⚠️ Chunk {indice_chunk}/{total_chunks} vazio/inválido, pulando.")
                 return True 
-
-            # Feedback de que está tentando converter (pode ser útil se a verificação acima não imprimir)
-            # print(f"🎙️  Convertendo chunk {indice_chunk}/{total_chunks}...") # Opcional
 
             communicate = edge_tts.Communicate(texto_chunk, voz)
             await communicate.save(caminho_saida_temp)
 
             if path_saida_obj.exists() and path_saida_obj.stat().st_size > 200:
-                return True
+                return True # Sucesso
             else:
-                print(f"⚠️ Arquivo áudio chunk {indice_chunk} vazio/pequeno (tentativa {tentativas + 1}).")
+                # Arquivo criado mas inválido
+                tamanho_real = path_saida_obj.stat().st_size if path_saida_obj.exists() else 0
+                print(f"⚠️ Arquivo áudio chunk {indice_chunk} inválido (tamanho: {tamanho_real} bytes). Tentativa {tentativas + 1}.")
                 path_saida_obj.unlink(missing_ok=True)
-        
-        except edge_tts.exceptions.NoAudioReceived:
-             print(f"❌ Sem áudio chunk {indice_chunk} (tentativa {tentativas + 1}).")
-             path_saida_obj.unlink(missing_ok=True)
-        except Exception as e:
-            print(f"❌ Erro TTS chunk {indice_chunk} (tentativa {tentativas + 1}): {str(e)}")
-            path_saida_obj.unlink(missing_ok=True)
+                # Continua para próxima tentativa
 
+        except edge_tts.exceptions.NoAudioReceived:
+             print(f"❌ Sem áudio recebido chunk {indice_chunk} (tentativa {tentativas + 1}). API pode estar offline ou rejeitou o texto.")
+             # path_saida_obj.unlink(missing_ok=True) # Já foi limpo no início do try ou não foi criado
+        except asyncio.TimeoutError: # Captura erro de timeout especificamente
+            print(f"❌ Timeout na comunicação TTS chunk {indice_chunk} (tentativa {tentativas + 1}). Verifique a conexão.")
+        except Exception as e: # Captura outros erros
+            print(f"❌ Erro INESPERADO TTS chunk {indice_chunk} (tentativa {tentativas + 1}): {type(e).__name__} - {e}")
+            import traceback # Imprime traceback para debug
+            traceback.print_exc()
+            # path_saida_obj.unlink(missing_ok=True) # Já foi limpo no início do try ou não foi criado
+
+        # Se chegou aqui, a tentativa falhou
         tentativas += 1
         if tentativas < MAX_TTS_TENTATIVAS:
             print(f"   Retentando chunk {indice_chunk} em {2 * tentativas}s...")
             await asyncio.sleep(2 * tentativas)
         else:
             print(f"❌ Falha definitiva chunk {indice_chunk} após {MAX_TTS_TENTATIVAS} tentativas.")
-            path_saida_obj.unlink(missing_ok=True)
+            # path_saida_obj.unlink(missing_ok=True) # Garante limpeza final
             return False
             
-    return False # Fallback, não deve ser atingido normalmente
+    return False
 
 def unificar_arquivos_audio_ffmpeg(lista_arquivos_temp: list, arquivo_final: str) -> bool:
     """Une arquivos de áudio temporários em um único arquivo final usando FFmpeg."""
@@ -1344,27 +1342,72 @@ async def testar_vozes_tts():
         opcoes_teste_voz = {str(i+1): voz for i, voz in enumerate(VOZES_PT_BR)}; opcoes_teste_voz[str(len(VOZES_PT_BR)+1)] = "Voltar"
         escolha_idx = await exibir_banner_e_menu("TESTAR VOZES", opcoes_teste_voz)
         if escolha_idx == len(VOZES_PT_BR)+1 or CANCELAR_PROCESSAMENTO: break
-        voz_selecionada = VOZES_PT_BR[escolha_idx - 1]; texto_exemplo = "Olá! Esta é uma demonstração da minha voz."
+        
+        voz_selecionada = VOZES_PT_BR[escolha_idx - 1]; texto_exemplo = "Olá! Esta é uma demonstração da minha voz para você avaliar."
         print(f"\n🎙️ Testando voz: {voz_selecionada}...")
-        sistema = detectar_sistema(); pasta_testes = Path.home() / "Downloads" / "TTS_Testes_Voz"
-        if sistema['termux'] or sistema['android']: pasta_testes = Path("/storage/emulated/0/Download/TTS_Testes_Voz")
-        pasta_testes.mkdir(parents=True, exist_ok=True)
-        nome_arquivo_teste = limpar_nome_arquivo(f"teste_{voz_selecionada}.mp3"); caminho_arquivo_teste = pasta_testes / nome_arquivo_teste
+        
+        sistema = detectar_sistema(); 
+        pasta_testes = Path.home() / "Downloads" / "TTS_Testes_Voz" # Padrão
+        if sistema['termux'] or sistema['android']: 
+            # Caminho mais comum no Android via Termux
+            pasta_testes = Path("/storage/emulated/0/Download/TTS_Testes_Voz")
+            # Verifica se a pasta pai (Download) existe, senão tenta o diretório home do Termux
+            if not pasta_testes.parent.exists():
+                 print(f"⚠️ Pasta {pasta_testes.parent} não encontrada. Tentando no diretório interno do Termux.")
+                 pasta_testes = Path.home() / "TTS_Testes_Voz"
+
+        # --- ADICIONADO: Feedback sobre a pasta e permissões ---
+        print(f"   Tentando salvar em: {pasta_testes}")
+        if sistema['termux'] or sistema['android']:
+            print("   Lembre-se: No Termux, execute 'termux-setup-storage' e conceda permissão para acesso ao armazenamento.")
+        # --- FIM DA ADIÇÃO ---
+
         try:
+            pasta_testes.mkdir(parents=True, exist_ok=True)
+        except OSError as e_mkdir:
+             print(f"❌ Erro ao criar/acessar a pasta de testes: {e_mkdir}")
+             print(f"   Verifique as permissões para '{pasta_testes}'.")
+             await asyncio.sleep(3)
+             continue # Pula para a próxima iteração do loop de teste de voz
+
+        nome_arquivo_teste = limpar_nome_arquivo(f"teste_{voz_selecionada}.mp3")
+        caminho_arquivo_teste = pasta_testes / nome_arquivo_teste
+        
+        try:
+            # Chama _converter_chunk_tts atualizado
             if await _converter_chunk_tts(texto_exemplo, voz_selecionada, str(caminho_arquivo_teste), 1, 1):
-                print(f"✅ Áudio de teste salvo: {caminho_arquivo_teste}")
-                if await obter_confirmacao("Ouvir áudio de teste?", default_yes=True):
-                    try:
-                        if sistema['windows']: os.startfile(caminho_arquivo_teste)
-                        elif sistema['termux'] and shutil.which("termux-media-player"): subprocess.run(['termux-media-player', 'play', str(caminho_arquivo_teste)], timeout=15)
-                        elif sistema['macos']: subprocess.run(['open', str(caminho_arquivo_teste)], check=True)
-                        elif sistema['linux']: subprocess.run(['xdg-open', str(caminho_arquivo_teste)], check=True)
-                        else: print("   Não foi possível reproduzir automaticamente.")
-                    except Exception as e_play: print(f"⚠️ Não reproduziu: {e_play}")
-            else: print(f"❌ Falha ao gerar áudio de teste para {voz_selecionada}.")
-        except asyncio.CancelledError: print("\n🚫 Teste de voz cancelado.");
-        if caminho_arquivo_teste.exists(): os.remove(caminho_arquivo_teste); break
-        if not await obter_confirmacao("Testar outra voz?", default_yes=True): break
+                # Verifica novamente se o arquivo realmente existe após a função retornar True
+                if caminho_arquivo_teste.exists() and caminho_arquivo_teste.stat().st_size > 50: # Reduz um pouco o limite mínimo para o teste
+                     print(f"✅ Áudio de teste salvo: {caminho_arquivo_teste}")
+                     if await obter_confirmacao("Ouvir áudio de teste?", default_yes=True):
+                         try:
+                             if sistema['windows']: os.startfile(caminho_arquivo_teste)
+                             elif sistema['termux'] and shutil.which("termux-media-player"): subprocess.run(['termux-media-player', 'play', str(caminho_arquivo_teste)], timeout=15)
+                             elif sistema['macos']: subprocess.run(['open', str(caminho_arquivo_teste)], check=True)
+                             elif sistema['linux']: subprocess.run(['xdg-open', str(caminho_arquivo_teste)], check=True)
+                             else: print("   Não foi possível reproduzir automaticamente.")
+                         except Exception as e_play: print(f"⚠️ Não reproduziu: {e_play}")
+                else:
+                     # A função retornou True, mas o arquivo não existe ou é inválido
+                     print(f"❌ Erro: Conversão para {voz_selecionada} indicada como sucesso, mas arquivo final é inválido ou não encontrado.")
+                     print(f"   Verifique permissões e logs de erro em _converter_chunk_tts.")
+                     caminho_arquivo_teste.unlink(missing_ok=True) # Limpa se existir inválido
+            else: 
+                # A função retornou False
+                print(f"❌ Falha ao gerar áudio de teste para {voz_selecionada} (ver logs acima).")
+        
+        except asyncio.CancelledError: 
+            print("\n🚫 Teste de voz cancelado.")
+            caminho_arquivo_teste.unlink(missing_ok=True) # Tenta limpar
+            break # Sai do loop de teste de vozes
+        except Exception as e_test: # Captura outros erros inesperados no teste
+             print(f"\n❌ Erro inesperado durante o teste da voz {voz_selecionada}: {e_test}")
+             import traceback
+             traceback.print_exc()
+             caminho_arquivo_teste.unlink(missing_ok=True) # Tenta limpar
+
+        if not await obter_confirmacao("Testar outra voz?", default_yes=True):
+            break
         if CANCELAR_PROCESSAMENTO: break
 
 def obter_duracao_midia(caminho_arquivo: str) -> float:
