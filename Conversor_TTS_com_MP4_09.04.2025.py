@@ -1,101 +1,3 @@
-import html2text
-from bs4 import BeautifulSoup
-
-# === Início da integração do módulo de formatação ===
-import re
-
-def separar_capitulos(texto):
-    """
-    Localiza títulos como 'Capítulo 1 Mesmo em pleno verão...' e converte para:
-
-    'CAPÍTULO 1.\n\nMesmo em pleno verão...'
-    """
-    padrao = re.compile(
-        r'(?i)(cap[íi]tulo)\s+(\d+|[ivxlcdm]+)\s*[:\-]?\s*(?=\S)([^\n]*)'
-    )
-
-    def substituir(match):
-        cabecalho = f"{match.group(1).upper()} {match.group(2).upper()}."
-        conteudo = match.group(3).strip()
-        return f"\n\n{cabecalho}\n\n{conteudo}"
-
-    return padrao.sub(substituir, texto)
-
-def remover_numeracao_avulsa(texto):
-    """
-    Remove numerações isoladas no início de linhas (como números de página ou listas não desejadas).
-    """
-    linhas = texto.splitlines()
-    novas_linhas = []
-    for linha in linhas:
-        if re.match(r'^\s*\d+\s*$', linha):  # Linha contém apenas números (possivelmente página)
-            continue
-        novas_linhas.append(linha)
-    return '\n'.join(novas_linhas)
-
-def padronizar_capitulos(texto):
-    """
-    Converte capítulos escritos por extenso ou misturados (ex: "CAPÍTULO UM", "CAPÍTULO CINCO") para numéricos.
-    """
-    conversao_manual = {
-        'UM': '1', 'DOIS': '2', 'TRÊS': '3', 'QUATRO': '4', 'CINCO': '5', 'SEIS': '6',
-        'SETE': '7', 'OITO': '8', 'NOVE': '9', 'DEZ': '10', 'ONZE': '11', 'DOZE': '12',
-        'TREZE': '13', 'CATORZE': '14', 'QUINZE': '15', 'DEZESSEIS': '16', 'DEZESSETE': '17',
-        'DEZOITO': '18', 'DEZENOVE': '19', 'VINTE': '20'
-    }
-
-    def substituidor(match):
-        capitulo = match.group(1).strip().upper()
-        titulo = match.group(2).strip()
-        numero = conversao_manual.get(capitulo, capitulo)
-        return f"CAPÍTULO {numero}: {titulo.title()}"
-
-    padrao = re.compile(r'CAP[IÍ]TULO\s+([A-ZÇÉÊÓÃÕ]+)\s*[:\-]?\s*(.+)', re.IGNORECASE)
-    return padrao.sub(substituidor, texto)
-
-def normalizar_caixa(texto):
-    """
-    Converte linhas completamente em maiúsculas para formato capitalizado.
-    """
-    linhas = texto.splitlines()
-    texto_final = []
-    for linha in linhas:
-        if linha.isupper() and len(linha.strip()) > 3:
-            texto_final.append(linha.capitalize())
-        else:
-            texto_final.append(linha)
-    return "\n".join(texto_final)
-
-def aplicar_formatacao(texto):
-    """
-    Aplica formatação geral ao texto para melhorar leitura e compatibilidade com TTS:
-    - Remove numeração de páginas
-    - Padroniza capítulos
-    - Normaliza caixa
-    - Quebras de linha adequadas após ponto final
-    - Separação visual dos capítulos
-    """
-    texto = remover_numeracao_avulsa(texto)
-    texto = padronizar_capitulos(texto)
-    texto = normalizar_caixa(texto)
-
-    # Remover quebras de linha únicas (exceto após ponto)
-    texto = re.sub(r'(?<!\n)\n(?!\n|\.\s*)', ' ', texto)
-
-    # Limita quebras múltiplas para no máximo duas
-    texto = re.sub(r'\n{3,}', '\n\n', texto)
-
-    # Garante quebra após ponto final
-    texto = re.sub(r'\.\s+', '.\n\n', texto)
-
-    # Isola corretamente os títulos de capítulos
-    texto = separar_capitulos(texto)
-
-    return texto
-
-
-# === Fim da integração ===
-
 #!/usr/bin/env python3
 import os
 import sys
@@ -104,1971 +6,1790 @@ import asyncio
 import re
 import signal
 from pathlib import Path
-import select
+# import select # Unused, consider removing
 import platform
 import zipfile
 import shutil
 import time
 import unicodedata
-import edge_tts
-import aioconsole
-import chardet
 from math import ceil
 
-# ================== CONFIGURAÇÕES GLOBAIS ==================
+# Attempt to import necessary modules, install if missing
+try:
+    import edge_tts
+except ModuleNotFoundError:
+    print("⚠️ Módulo 'edge-tts' não encontrado. Instalando...")
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "--user", "edge-tts>=6.1.5"])
+    import site
+    if site.getusersitepackages() not in sys.path: sys.path.append(site.getusersitepackages())
+    import edge_tts
 
-# Tenta importar o tqdm; se não encontrar, instala-o e adiciona o diretório do usuário ao sys.path
+try:
+    from bs4 import BeautifulSoup
+except ModuleNotFoundError:
+    print("⚠️ Módulo 'beautifulsoup4' não encontrado. Instalando...")
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "--user", "beautifulsoup4"])
+    import site
+    if site.getusersitepackages() not in sys.path: sys.path.append(site.getusersitepackages())
+    from bs4 import BeautifulSoup
+
+try:
+    import html2text
+except ModuleNotFoundError:
+    print("⚠️ Módulo 'html2text' não encontrado. Instalando...")
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "--user", "html2text"])
+    import site
+    if site.getusersitepackages() not in sys.path: sys.path.append(site.getusersitepackages())
+    import html2text
+
 try:
     from tqdm import tqdm
 except ModuleNotFoundError:
     print("⚠️ Módulo 'tqdm' não encontrado. Instalando...")
     subprocess.check_call([sys.executable, "-m", "pip", "install", "--user", "tqdm"])
-    try:
+    try: # Add user site packages to path for immediate import
         import site
-        site.addsitedir(site.getusersitepackages())
+        if site.getusersitepackages() not in sys.path:
+            sys.path.append(site.getusersitepackages())
     except Exception as e:
         print(f"❌ Erro ao adicionar o diretório de pacotes do usuário: {e}")
     from tqdm import tqdm
 
-# Garantindo o módulo requests
 try:
     import requests
 except ModuleNotFoundError:
     print("⚠️ Módulo 'requests' não encontrado. Instalando...")
     subprocess.check_call([sys.executable, "-m", "pip", "install", "--user", "requests"])
+    import site
+    if site.getusersitepackages() not in sys.path: sys.path.append(site.getusersitepackages())
     import requests
 
-# Vozes disponíveis para conversão
+try:
+    import aioconsole
+except ModuleNotFoundError:
+    print("⚠️ Módulo 'aioconsole' não encontrado. Instalando...")
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "--user", "aioconsole>=0.6.0"])
+    import site
+    if site.getusersitepackages() not in sys.path: sys.path.append(site.getusersitepackages())
+    import aioconsole
+
+try:
+    import chardet
+except ModuleNotFoundError:
+    print("⚠️ Módulo 'chardet' não encontrado. Instalando...")
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "--user", "chardet>=5.0.0"])
+    import site
+    if site.getusersitepackages() not in sys.path: sys.path.append(site.getusersitepackages())
+    import chardet
+
+try:
+    from num2words import num2words
+except ImportError:
+    print("⚠️ Módulo 'num2words' não encontrado. Instalando...")
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "--user", "num2words>=0.5.12"])
+    import site
+    if site.getusersitepackages() not in sys.path: sys.path.append(site.getusersitepackages())
+    from num2words import num2words
+
+try:
+    from langdetect import detect, DetectorFactory
+    DetectorFactory.seed = 0 # for consistent results
+    LANG_DETECT_AVAILABLE = True
+except ImportError:
+    print("\n⚠️ O módulo langdetect não está instalado. Instale com: pip install langdetect")
+    LANG_DETECT_AVAILABLE = False
+
+
+# ================== CONFIGURAÇÕES GLOBAIS ==================
 VOZES_PT_BR = [
     "pt-BR-ThalitaMultilingualNeural",  # Voz padrão
     "pt-BR-FranciscaNeural",
     "pt-BR-AntonioNeural"
 ]
-
 ENCODINGS_TENTATIVAS = ['utf-8', 'utf-16', 'iso-8859-1', 'cp1252']
-BUFFER_IO = 32768
-MAX_TENTATIVAS = 3  # Número máximo de tentativas por chunk
+# BUFFER_IO = 32768 # Unused
+MAX_TTS_TENTATIVAS = 3
 CANCELAR_PROCESSAMENTO = False
 FFMPEG_BIN = "ffmpeg"
 FFPROBE_BIN = "ffprobe"
-LIMITE_SEGUNDOS = 43200  # 12 horas para divisão de arquivos longos
-# === Escolhas de resolução para o submenu de vídeo ===
-# === Escolhas de resolução para o submenu de vídeo ===
+LIMITE_SEGUNDOS_DIVISAO = 43200  # 12 horas para divisão de arquivos longos
+
 RESOLUCOES_VIDEO = {
     '1': ('640x360', '360p'),
     '2': ('854x480', '480p'),
-    '3': ('1280x720', '720p (mais processamento e maior arquivo)')
+    '3': ('1280x720', '720p (HD - maior processamento e arquivo)')
+}
+SISTEMA_OPERACIONAL_INFO = {} # To store detected OS info globally
+
+# ================== FUNÇÕES DE TEXTO MELHORADAS E CONSOLIDADAS ==================
+
+ABREVIACOES_EXPANSAO = {
+    r'\bDr\.(?=\s)': 'Doutor', r'\bD\.(?=\s)': 'Dona', r'\bDra\.(?=\s)': 'Doutora',
+    r'\bSr\.(?=\s)': 'Senhor', r'\bSra\.(?=\s)': 'Senhora', r'\bSrta\.(?=\s)': 'Senhorita',
+    r'\bProf\.(?=\s)': 'Professor', r'\bProfa\.(?=\s)': 'Professora',
+    r'\bEng\.(?=\s)': 'Engenheiro', r'\bEngª\.(?=\s)': 'Engenheira',
+    r'\bAdm\.(?=\s)': 'Administrador', r'\bAdv\.(?=\s)': 'Advogado',
+    r'\bExmo\.(?=\s)': 'Excelentíssimo', r'\bExma\.(?=\s)': 'Excelentíssima',
+    r'\bV\.Exa\.(?=\s)': 'Vossa Excelência', r'\bV\.Sa\.(?=\s)': 'Vossa Senhoria',
+    r'\bAv\.(?=\s)': 'Avenida', r'\bR\.(?=\s)': 'Rua', r'\bKm\.(?=\s)': 'Quilômetro',
+    r'\betc\.(?=\s|\.)': 'etcétera', # Handle etc. at end of sentence
+    r'\bRef\.(?=\s)': 'Referência',
+    r'\bP[áa]g\.(?=\s)': 'Página', r'\bP[áa]gs\.(?=\s)': 'Páginas',
+    r'\bFl\.(?=\s)': 'Folha', r'\bFls\.(?=\s)': 'Folhas',
+    r'\bPe\.(?=\s)': 'Padre',
+    r'\bDept[o]?\.(?=\s)': 'Departamento',
+    r'\bUniv\.(?=\s)': 'Universidade', r'\bInst\.(?=\s)': 'Instituição',
+    r'\bEst\.(?=\s)': 'Estado', r'\bTel\.(?=\s)': 'Telefone',
+    r'\bCEP(?=\s|:)': 'Código de Endereçamento Postal', # No dot needed for CEP
+    r'\bCNPJ(?=\s|:)': 'Cadastro Nacional da Pessoa Jurídica',
+    r'\bCPF(?=\s|:)': 'Cadastro de Pessoas Físicas',
+    r'\bEUA\.(?=\s)': 'Estados Unidos da América',
+    r'\bEd\.(?=\s)': 'Edição', r'\bLtda\.(?=\s)': 'Limitada'
 }
 
-async def escolher_resolucao():
+CONVERSAO_CAPITULOS_EXTENSO_PARA_NUM = {
+    'UM': '1', 'DOIS': '2', 'TRÊS': '3', 'QUATRO': '4', 'CINCO': '5',
+    'SEIS': '6', 'SETE': '7', 'OITO': '8', 'NOVE': '9', 'DEZ': '10',
+    'ONZE': '11', 'DOZE': '12', 'TREZE': '13', 'CATORZE': '14', 'QUINZE': '15',
+    'DEZESSEIS': '16', 'DEZESSETE': '17', 'DEZOITO': '18', 'DEZENOVE': '19', 'VINTE': '20'
+    # Add more if needed
+}
+
+def _formatar_numeracao_capitulos(texto):
     """
-    Apresenta submenu de resoluções e retorna string 'LARGExALTO' escolhida.
+    Localiza títulos como 'Capítulo 1 Mesmo em pleno verão...' ou 'CAPÍTULO UM ...'
+    e converte para: '\n\nCAPÍTULO 1.\n\nMesmo em pleno verão...'
+    Também padroniza números por extenso para arábicos.
     """
-    print("\nSelecione a resolução do vídeo (quanto maior, mais processamento e tamanho de arquivo):")
-    for chave, (_, descricao) in RESOLUCOES_VIDEO.items():
-        print(f"  {chave}. {descricao}")
-    escolha = await aioconsole.ainput("\nOpção [1-3]: ")
-    if escolha not in RESOLUCOES_VIDEO:
-        print("Opção inválida. Será usada resolução 360p.")
-        escolha = '1'
-    largura_alto, _ = RESOLUCOES_VIDEO[escolha]
-    return largura_alto
+    def substituir_cap(match):
+        tipo_cap = match.group(1).upper() # CAPÍTULO ou CAP.
+        numero_rom_arab = match.group(2)
+        numero_extenso = match.group(3)
+        titulo_opcional = match.group(4).strip() if match.group(4) else ""
+
+        numero_final = ""
+        if numero_rom_arab:
+            numero_final = numero_rom_arab.upper()
+        elif numero_extenso:
+            num_ext_upper = numero_extenso.strip().upper()
+            numero_final = CONVERSAO_CAPITULOS_EXTENSO_PARA_NUM.get(num_ext_upper, num_ext_upper)
+
+        cabecalho = f"{tipo_cap} {numero_final}."
+        if titulo_opcional: # Se houver título após o número
+             # Capitaliza o título do capítulo, mas preserva siglas
+            palavras_titulo = []
+            for p in titulo_opcional.split():
+                if p.isupper() and len(p) > 1: # sigla
+                    palavras_titulo.append(p)
+                else:
+                    palavras_titulo.append(p.capitalize())
+            titulo_formatado = " ".join(palavras_titulo)
+            return f"\n\n{cabecalho}\n\n{titulo_formatado}"
+        return f"\n\n{cabecalho}\n\n" # Se o título já está na próxima linha
+
+    padrao = re.compile(
+        r'(?i)(cap[íi]tulo|cap\.?)\s+'
+        r'(?:(\d+|[IVXLCDM]+)|([A-ZÇÉÊÓÃÕa-zçéêóãõ]+))'
+        r'\s*[:\-.]?\s*'
+        r'(?=\S)([^\n]*)?',
+        re.IGNORECASE
+    )
+    texto = padrao.sub(substituir_cap, texto)
+
+    def substituir_extenso_com_titulo(match):
+        num_ext = match.group(1).strip().upper()
+        titulo = match.group(2).strip().title()
+        numero = CONVERSAO_CAPITULOS_EXTENSO_PARA_NUM.get(num_ext, num_ext)
+        return f"CAPÍTULO {numero}: {titulo}"
+
+    padrao_extenso_titulo = re.compile(r'CAP[IÍ]TULO\s+([A-ZÇÉÊÓÃÕ]+)\s*[:\-]\s*(.+)', re.IGNORECASE)
+    texto = padrao_extenso_titulo.sub(substituir_extenso_com_titulo, texto)
+    return texto
+
+def _remover_numeros_pagina_isolados(texto):
+    linhas = texto.splitlines()
+    novas_linhas = []
+    for linha in linhas:
+        if re.match(r'^\s*\d+\s*$', linha):
+            continue
+        linha = re.sub(r'\s{3,}\d+\s*$', '', linha)
+        novas_linhas.append(linha)
+    return '\n'.join(novas_linhas)
+
+def _normalizar_caixa_alta_linhas(texto):
+    linhas = texto.splitlines()
+    texto_final = []
+    for linha in linhas:
+        if not re.match(r'^\s*CAP[ÍI]TULO\s+[\w\d]+\.?\s*$', linha, re.IGNORECASE):
+            if linha.isupper() and len(linha.strip()) > 3 and any(c.isalpha() for c in linha):
+                palavras = []
+                for p in linha.split():
+                    if len(p) > 1 and p.isupper() and p.isalpha() and p not in ['I', 'A', 'E', 'O', 'U']:
+                        if not (sum(1 for char in p if char in "AEIOU") > 0 and \
+                                sum(1 for char in p if char not in "AEIOU") > 0 and len(p) <=4) :
+                            palavras.append(p)
+                            continue
+                    palavras.append(p.capitalize())
+                texto_final.append(" ".join(palavras))
+            else:
+                texto_final.append(linha)
+        else:
+            texto_final.append(linha)
+    return "\n".join(texto_final)
+
+def _corrigir_hifenizacao_quebras(texto):
+    return re.sub(r'(\w+)-\s*\n\s*(\w+)', r'\1\2', texto)
+
+def _remover_metadados_pdf(texto):
+    texto = re.sub(r'^\s*[\w\d_-]+\.indd\s+\d+\s+\d{2}/\d{2}/\d{2,4}\s+\d{1,2}:\d{2}(:\d{2})?\s*([AP]M)?\s*$', '', texto, flags=re.MULTILINE)
+    return texto
+
+def _expandir_abreviacoes_numeros(texto):
+    for abrev, expansao in ABREVIACOES_EXPANSAO.items():
+        texto = re.sub(abrev, expansao, texto, flags=re.IGNORECASE)
+
+    def _converter_numero_match(match):
+        num_str = match.group(0)
+        try:
+            if re.match(r'^\d{4}$', num_str) and (1900 <= int(num_str) <= 2100):
+                return num_str
+            if len(num_str) > 7 :
+                return num_str
+            return num2words(int(num_str), lang='pt_BR')
+        except Exception:
+            return num_str
+
+    texto = re.sub(r'\b\d+\b', _converter_numero_match, texto)
+
+    def _converter_valor_monetario_match(match):
+        valor_inteiro = match.group(1).replace('.', '')
+        try:
+            reais = num2words(int(valor_inteiro), lang='pt_BR')
+            return f"{reais} reais"
+        except Exception:
+            return match.group(0)
+    texto = re.sub(r'R\$\s*(\d{1,3}(?:\.\d{3})*),(\d{2})', _converter_valor_monetario_match, texto)
+    texto = re.sub(r'R\$\s*(\d+)(?:,00)?', lambda m: f"{num2words(int(m.group(1)), lang='pt_BR')} reais" if m.group(1) else m.group(0) , texto)
+    texto = re.sub(r'\b(\d+)\s*-\s*(\d+)\b',
+                   lambda m: f"{num2words(int(m.group(1)), lang='pt_BR')} a {num2words(int(m.group(2)), lang='pt_BR')}",
+                   texto)
+    return texto
+
+def _converter_ordinais_para_extenso(texto: str) -> str:
+    """Converte números ordinais como 1º, 2a, 3ª para extenso."""
+
+    def substituir_ordinal(match):
+        numero = match.group(1)
+        terminacao = match.group(2).lower() # 'o', 'a', 'os', 'as' (embora 'os'/'as' sejam menos comuns assim)
+
+        try:
+            num_int = int(numero)
+            if terminacao == 'o' or terminacao == 'º':
+                return num2words(num_int, lang='pt_BR', to='ordinal')
+            elif terminacao == 'a' or terminacao == 'ª':
+                # num2words para ordinal feminino em pt_BR pode precisar de ajuste manual
+                # para algumas bibliotecas ou versões.
+                # A biblioteca num2words geralmente lida bem com isso se o idioma estiver correto.
+                # Ex: num2words(1, lang='pt_BR', to='ordinal_num') -> 1 (mas queremos extenso)
+                # Tentativa: converter para ordinal masculino e trocar terminação se necessário
+                ordinal_masc = num2words(num_int, lang='pt_BR', to='ordinal')
+                if ordinal_masc.endswith('o'):
+                    return ordinal_masc[:-1] + 'a'
+                else: # Casos como 'terceiro' -> 'terceira' já são cobertos
+                    return ordinal_masc # Ou lógica mais específica se necessário
+            else: # Caso não previsto, retorna o original
+                return match.group(0)
+        except ValueError:
+            return match.group(0) # Se não for um número válido
+
+    # Padrão para encontrar números seguidos por 'o', 'a', 'º', ou 'ª'
+    # \b(\d+)\s*([oaºª])\b -> \b para garantir que é uma palavra/número isolado
+    # Adicionamos (?!\w) para evitar pegar em palavras como "para" ou "caso"
+    padrao_ordinal = re.compile(r'\b(\d+)\s*([oaºª])(?!\w)', re.IGNORECASE)
+    texto = padrao_ordinal.sub(substituir_ordinal, texto)
+
+    return texto
+
+def formatar_texto_para_tts(texto_bruto: str) -> str:
+    print("⚙️ Aplicando formatações ao texto...")
+    texto = texto_bruto
+
+    # 0. Normalizações iniciais e remoção de caracteres indesejados básicos
+    texto = unicodedata.normalize('NFKC', texto)
+    texto = texto.replace('\f', '\n\n')
+    texto = texto.replace('*', '')
+
+    # === Substituir _, #, @ por espaço === (mantido)
+    caracteres_para_substituir = ['_', '#', '@']
+    for char in caracteres_para_substituir:
+        texto = texto.replace(char, ' ')
+    
+    # === NOVA ETAPA: Remover parênteses ( e ) ===
+    # Substitui por nada, efetivamente removendo-os
+    texto = texto.replace('(', '')
+    texto = texto.replace(')', '')
+    # ============================================
+
+    # === Remover QUALQUER coisa dentro de {} === (mantido)
+    texto = re.sub(r'\{.*?\}', '', texto)
+    # =========================================================
+
+    # 1. Pré-limpeza de caracteres estranhos e espaços excessivos (mantido)
+    texto = re.sub(r'[ \t]+', ' ', texto) 
+    texto = "\n".join([linha.strip() for linha in texto.splitlines()])
+    texto = re.sub(r'(?<=\w)\s*\](?=\s|$|\n)', '', texto) 
+    texto = re.sub(r'\[\s*(?=\w)', '', texto)            
+
+    # 2. TRATAMENTO DE QUEBRAS DE LINHA DENTRO DE PARÁGRAFOS (mantido)
+    # ... (código inalterado para juntar linhas) ...
+    paragrafos_originais = texto.split('\n\n')
+    paragrafos_processados = []
+    for paragrafo_bruto in paragrafos_originais:
+        if not paragrafo_bruto.strip(): continue
+        linhas_do_paragrafo = paragrafo_bruto.split('\n')
+        paragrafo_corrido = ""
+        for i, linha in enumerate(linhas_do_paragrafo):
+            linha_strip = linha.strip()
+            if not linha_strip: continue
+            if not paragrafo_corrido: paragrafo_corrido = linha_strip
+            else:
+                if re.search(r'[.!?…]$', paragrafo_corrido) or \
+                   (linha_strip and linha_strip[0].isupper() and len(paragrafo_corrido.split()[-1]) > 2) or \
+                   (len(linha_strip) < 5 and not any(c.isalpha() for c in linha_strip)):
+                    paragrafo_corrido += "\n" + linha_strip
+                else:
+                    paragrafo_corrido += " " + linha_strip
+        paragrafo_corrido = re.sub(r'[ \t]+', ' ', paragrafo_corrido).strip()
+        if paragrafo_corrido: paragrafos_processados.append(paragrafo_corrido)
+    texto = '\n\n'.join(paragrafos_processados)
+
+    # 3. Limpeza de espaços e quebras (mantido)
+    # ... (código inalterado) ...
+    texto = re.sub(r'[ \t]+', ' ', texto)
+    texto = re.sub(r'\s*\n\s*', '\n', texto)
+    texto = re.sub(r'\n{3,}', '\n\n', texto)
+
+    # Etapas originais de formatação (mantidas)
+    # ... (código inalterado) ...
+    texto = _remover_metadados_pdf(texto)
+    texto = _remover_numeros_pagina_isolados(texto)
+    texto = _corrigir_hifenizacao_quebras(texto) 
+    texto = _formatar_numeracao_capitulos(texto)
+
+    # Quebra de parágrafo após pontuação final (mantido)
+    # ... (código inalterado) ...
+    texto = re.sub(r'([.!?…])\s*(?!\n\n|\n?$)', r'\1\n\n', texto)
+
+    # Normalização de caixa (mantido)
+    # ... (código inalterado) ...
+    texto = _normalizar_caixa_alta_linhas(texto)
+
+    # Conversão de ordinais (mantido)
+    # ... (código inalterado) ...
+    texto = _converter_ordinais_para_extenso(texto) 
+
+    # Expansões de abreviações e números cardinais (mantido)
+    # ... (código inalterado) ...
+    texto = _expandir_abreviacoes_numeros(texto) 
+
+    # 5. Pós-processamento final de parágrafos (mantido)
+    # ... (código inalterado) ...
+    paragrafos_finais = texto.split('\n\n')
+    paragrafos_formatados_final = []
+    for p in paragrafos_finais:
+        p_strip = p.strip()
+        if not p_strip: continue
+        p_strip = "\n".join([ln for ln in p_strip.split('\n') if any(c.isalpha() or c.isdigit() for c in ln) or len(ln.strip()) > 2])
+        if not p_strip: continue
+        ultima_linha = p_strip.split('\n')[-1].strip()
+        if not re.search(r'[.!?…)]$', ultima_linha) and \
+           not re.match(r'^\s*CAP[ÍI]TULO\s+[\w\d]+\.?\s*$', p_strip.split('\n')[0].strip(), re.IGNORECASE):
+            linhas_p = p_strip.split('\n')
+            linhas_p[-1] = linhas_p[-1].strip() + '.'
+            p_strip = "\n".join(linhas_p)
+        paragrafos_formatados_final.append(p_strip)
+    texto = '\n\n'.join(paragrafos_formatados_final)
+
+    # Última limpeza (mantido)
+    # ... (código inalterado) ...
+    texto = re.sub(r'[ \t]+', ' ', texto).strip()
+    texto = re.sub(r'\n{3,}', '\n\n', texto)
+    texto = re.sub(r'(\s*\n){2,}\s*', '\n\n', texto)
+
+    print("✅ Formatação de texto concluída.")
+    return texto.strip()
+
+# ================== FUNÇÕES DE SISTEMA E DEPENDÊNCIAS ==================
 
 def handler_sinal(signum, frame):
     global CANCELAR_PROCESSAMENTO
     CANCELAR_PROCESSAMENTO = True
-    print("\n🚫 Operação cancelada pelo usuário")
+    print("\n🚫 Operação cancelada pelo usuário. Aguarde a finalização da tarefa atual...")
 
 signal.signal(signal.SIGINT, handler_sinal)
 
 def detectar_sistema():
-    """Detecta o sistema operacional e ambiente de execução."""
+    global SISTEMA_OPERACIONAL_INFO
+    if SISTEMA_OPERACIONAL_INFO:
+        return SISTEMA_OPERACIONAL_INFO
     sistema = {
-        'nome': platform.system().lower(),
-        'termux': False,
-        'android': False,
-        'windows': False,
-        'linux': False,
-        'macos': False,
+        'nome': platform.system().lower(), 'termux': False, 'android': False,
+        'windows': False, 'linux': False, 'macos': False,
     }
-    if sistema['nome'] == 'windows':
-        sistema['windows'] = True
-        return sistema
-    if sistema['nome'] == 'darwin':
-        sistema['macos'] = True
-        return sistema
-    if sistema['nome'] == 'linux':
+    if sistema['nome'] == 'windows': sistema['windows'] = True
+    elif sistema['nome'] == 'darwin': sistema['macos'] = True
+    elif sistema['nome'] == 'linux':
         sistema['linux'] = True
-        is_android = any([
-            'ANDROID_ROOT' in os.environ,
-            'TERMUX_VERSION' in os.environ,
-            os.path.exists('/data/data/com.termux'),
-            os.path.exists('/system/bin/linker64')
-        ])
-        if is_android:
+        if 'ANDROID_ROOT' in os.environ or os.path.exists('/system/bin/app_process'):
             sistema['android'] = True
-            if any([
-                'TERMUX_VERSION' in os.environ,
-                os.path.exists('/data/data/com.termux')
-            ]):
+            if 'TERMUX_VERSION' in os.environ or os.path.exists('/data/data/com.termux'):
                 sistema['termux'] = True
-                os.environ['PATH'] = f"{os.environ.get('PATH', '')}:/data/data/com.termux/files/usr/bin"
+                termux_bin = '/data/data/com.termux/files/usr/bin'
+                if termux_bin not in os.environ.get('PATH', ''):
+                    os.environ['PATH'] = f"{os.environ.get('PATH', '')}:{termux_bin}"
+    SISTEMA_OPERACIONAL_INFO = sistema
     return sistema
+
+def _verificar_comando(comando_args, mensagem_sucesso, mensagem_falha, install_commands=None):
+    try:
+        subprocess.run(comando_args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
+        print(f"✅ {mensagem_sucesso}")
+        return True
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        print(f"⚠️ {mensagem_falha}")
+        current_os_name = SISTEMA_OPERACIONAL_INFO.get('nome', '')
+        if install_commands and current_os_name:
+            cmd_list = install_commands.get(current_os_name)
+            if SISTEMA_OPERACIONAL_INFO.get('termux') and install_commands.get('termux'):
+                cmd_list = install_commands.get('termux')
+
+            if cmd_list:
+                print(f"   Sugestão de instalação: {' OR '.join(cmd_list)}")
+                if SISTEMA_OPERACIONAL_INFO.get('termux') and 'poppler' in mensagem_falha.lower():
+                    if _instalar_dependencia_termux_auto('poppler'): return True
+                elif SISTEMA_OPERACIONAL_INFO.get('windows') and 'poppler' in mensagem_falha.lower():
+                    if instalar_poppler_windows(): return True # instalar_poppler_windows is defined later
+            else:
+                print("   Comando de instalação não especificado para este SO.")
+        elif not install_commands:
+             print("   Comando de instalação não especificado.")
+        return False
+
+def _instalar_dependencia_termux_auto(pkg: str) -> bool:
+    try:
+        print(f" пытаюсь установить {pkg} в Termux...")
+        subprocess.run(['pkg', 'update', '-y'], check=True, capture_output=True)
+        subprocess.run(['pkg', 'install', '-y', pkg], check=True, capture_output=True)
+        print(f"✅ Pacote Termux {pkg} instalado com sucesso!")
+        return True
+    except subprocess.CalledProcessError as e:
+        print(f"❌ Erro ao instalar pacote Termux {pkg} automaticamente: {e.stderr.decode() if e.stderr else e}")
+    except Exception as e:
+        print(f"❌ Erro inesperado ao instalar {pkg} em Termux: {e}")
+    return False
 
 def instalar_poppler_windows():
-    """Instala o Poppler no Windows automaticamente."""
+    if shutil.which("pdftotext.exe"):
+        print("✅ Poppler (pdftotext.exe) já encontrado no PATH.")
+        return True
+    print("📦 Poppler (pdftotext.exe) não encontrado no PATH. Tentando instalar...")
     try:
         poppler_url = "https://github.com/oschwartz10612/poppler-windows/releases/download/v23.11.0-0/Release-23.11.0-0.zip"
-        install_dir = os.path.join(os.environ['LOCALAPPDATA'], 'Poppler')
+        install_dir_base = os.environ.get('LOCALAPPDATA', os.path.join(os.path.expanduser("~"), "AppData", "Local"))
+        if not install_dir_base:
+             install_dir_base = os.path.join(os.path.expanduser("~"), "Poppler")
+        install_dir = os.path.join(install_dir_base, 'Poppler')
         os.makedirs(install_dir, exist_ok=True)
         print("📥 Baixando Poppler...")
-        response = requests.get(poppler_url)
+        response = requests.get(poppler_url, stream=True)
+        response.raise_for_status()
         zip_path = os.path.join(install_dir, "poppler.zip")
         with open(zip_path, 'wb') as f:
-            f.write(response.content)
+            for chunk in response.iter_content(chunk_size=8192): f.write(chunk)
         print("📦 Extraindo arquivos...")
-        with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-            zip_ref.extractall(install_dir)
+        archive_root_dir_name = ""
+        with zipfile.ZipFile(zip_path, 'r') as zip_ref_check:
+            common_paths = list(set([item.split('/')[0] for item in zip_ref_check.namelist() if '/' in item]))
+            if len(common_paths) == 1: archive_root_dir_name = common_paths[0]
+        with zipfile.ZipFile(zip_path, 'r') as zip_ref: zip_ref.extractall(install_dir)
         os.remove(zip_path)
-        bin_paths = [
-            os.path.join(install_dir, 'bin'),
-            os.path.join(install_dir, 'Library', 'bin'),
-            os.path.join(install_dir, 'poppler-23.11.0', 'bin'),
-            os.path.join(install_dir, 'Release-23.11.0-0', 'bin')
-        ]
         bin_path = None
-        for path in bin_paths:
-            if os.path.exists(path) and any(f.endswith('.exe') for f in os.listdir(path) if os.path.isfile(os.path.join(path, f))):
-                bin_path = path
-                break
+        if archive_root_dir_name:
+            potential_bin_path = os.path.join(install_dir, archive_root_dir_name, 'Library', 'bin')
+            if not os.path.exists(potential_bin_path):
+                 potential_bin_path = os.path.join(install_dir, archive_root_dir_name, 'bin')
+            if os.path.exists(potential_bin_path): bin_path = potential_bin_path
         if not bin_path:
+            potential_bin_path = os.path.join(install_dir, 'bin')
+            if os.path.exists(potential_bin_path): bin_path = potential_bin_path
+        if not bin_path or not os.path.exists(os.path.join(bin_path, 'pdftotext.exe')):
             for root, dirs, files in os.walk(install_dir):
-                if 'bin' in dirs and any(f.endswith('.exe') for f in os.listdir(os.path.join(root, 'bin')) if os.path.isfile(os.path.join(root, 'bin', f))):
-                    bin_path = os.path.join(root, 'bin')
-                    break
-        if not bin_path:
-            print(f"❌ Erro: Diretório bin não encontrado em {install_dir}")
-            return False
-        print(f"✅ Diretório bin encontrado em: {bin_path}")
-        pdftotext_path = os.path.join(bin_path, 'pdftotext.exe')
-        if not os.path.exists(pdftotext_path):
-            print(f"❌ Erro: pdftotext.exe não encontrado em {bin_path}")
-            return False
-        if bin_path not in os.environ['PATH']:
-            os.environ['PATH'] = f"{bin_path};{os.environ['PATH']}"
+                if 'pdftotext.exe' in files and 'bin' in root: bin_path = root; break
+            if not bin_path:
+                print(f"❌ Erro: Diretório 'bin' com 'pdftotext.exe' não encontrado em {install_dir} após extração.")
+                shutil.rmtree(install_dir); return False
+        print(f"✅ Diretório bin do Poppler encontrado em: {bin_path}")
         try:
-            subprocess.run([pdftotext_path, "-v"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
-            print("✅ Poppler instalado com sucesso!")
-            return True
-        except subprocess.CalledProcessError as e:
-            print(f"❌ Erro ao verificar pdftotext: {e}")
-            return False
-    except Exception as e:
-        print(f"❌ Erro ao instalar Poppler: {str(e)}")
-        return False
-
-def converter_pdf(caminho_pdf: str, caminho_txt: str) -> bool:
-    """Converte PDF para TXT utilizando o comando pdftotext."""
-    try:
-        caminho_pdf = os.path.abspath(caminho_pdf)
-        if not os.path.isfile(caminho_pdf):
-            print(f"❌ Arquivo PDF não encontrado: {caminho_pdf}")
-            return False
-        with open(caminho_pdf, 'rb') as _:
-            pass
-    except PermissionError:
-        print(f"❌ Sem permissão para acessar o arquivo: {caminho_pdf}")
-        return False
-    except Exception as e:
-        print(f"❌ Erro ao acessar o arquivo PDF: {str(e)}")
-        return False
-    diretorio_saida = os.path.dirname(caminho_txt)
-    if diretorio_saida and not os.path.exists(diretorio_saida):
-        try:
-            os.makedirs(diretorio_saida, exist_ok=True)
-            print(f"✅ Diretório de saída criado: {diretorio_saida}")
-        except Exception as e:
-            print(f"❌ Erro ao criar diretório de saída: {str(e)}")
-            return False
-    sistema = detectar_sistema()
-    if sistema['windows']:
-        pdftotext_path = None
-        for path in os.environ['PATH'].split(';'):
-            if not path.strip():
-                continue
-            test_path = os.path.join(path.strip(), 'pdftotext.exe')
-            if os.path.exists(test_path) and os.path.isfile(test_path):
-                pdftotext_path = test_path
-                break
-        if not pdftotext_path:
-            print("📦 Poppler não encontrado. Iniciando instalação automática...")
-            if not instalar_poppler_windows():
-                return False
-            for path in os.environ['PATH'].split(';'):
-                if not path.strip():
-                    continue
-                test_path = os.path.join(path.strip(), 'pdftotext.exe')
-                if os.path.exists(test_path) and os.path.isfile(test_path):
-                    pdftotext_path = test_path
-                    break
-            if not pdftotext_path:
-                print("❌ Não foi possível encontrar o pdftotext mesmo após a instalação")
-                return False
-    else:
-        try:
-            subprocess.run(["pdftotext", "-v"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
-        except FileNotFoundError:
-            if sistema['macos']:
-                print("❌ O pdftotext não está instalado no sistema. Instale com: brew install poppler")
-                return False
-            elif sistema['linux']:
-                if sistema['termux']:
-                    print("❌ O pdftotext não está instalado no sistema. Tentando instalar automaticamente com: pkg install poppler")
-                    if instalar_poppler():
-                        print("✅ Poppler instalado com sucesso! Execute novamente a conversão.")
-                    else:
-                        print("❌ Falha ao instalar poppler automaticamente.")
-                    return False
+            import winreg
+            key_path = r"Environment"
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_READ | winreg.KEY_WRITE) as key:
+                current_path, _ = winreg.QueryValueEx(key, "PATH")
+                if bin_path not in current_path:
+                    new_path = f"{current_path};{bin_path}" if current_path else bin_path
+                    winreg.SetValueEx(key, "PATH", 0, winreg.REG_EXPAND_SZ, new_path)
+                    os.environ['PATH'] = f"{bin_path};{os.environ['PATH']}"
+                    print("✅ Poppler adicionado ao PATH do usuário. Pode ser necessário reiniciar o terminal/IDE.")
                 else:
-                    print("❌ O pdftotext não está instalado no sistema. Instale com: sudo apt-get install poppler-utils")
-                    return False
-    if sistema['windows'] and pdftotext_path:
-        resultado = subprocess.run(
-            [pdftotext_path, "-layout", caminho_pdf, caminho_txt],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE
-        )
-    else:
-        resultado = subprocess.run(
-            ["pdftotext", "-layout", caminho_pdf, caminho_txt],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE
-        )
-    if resultado.returncode != 0:
-        print(f"❌ Erro ao converter o PDF: {resultado.stderr.decode()}")
-        return False
-    return True
-
-def verificar_sistema() -> dict:
-    """Exibe informações do ambiente de execução."""
-    print("\n🔍 Verificando ambiente de execução...")
-    sistema = detectar_sistema()
-    if sistema['termux']:
-        print("✅ Executando no Termux (Android)")
-    elif sistema['android']:
-        print("✅ Executando no Android (não-Termux)")
-    elif sistema['windows']:
-        print("✅ Executando no Windows")
-    elif sistema['macos']:
-        print("✅ Executando no macOS")
-    elif sistema['linux']:
-        print("✅ Executando no Linux")
-    else:
-        print("⚠️ Sistema operacional não identificado com precisão")
-    return sistema
-
-def instalar_dependencia_termux(pkg: str) -> None:
-    """Verifica e instala um pacote do Termux, se necessário."""
-    try:
-        subprocess.run(['pkg', 'update', '-y'], check=True, capture_output=True)
-        resultado = subprocess.run(['pkg', 'list-installed', pkg], capture_output=True, text=True)
-        if pkg in resultado.stdout:
-            print(f"✅ Pacote Termux {pkg} já está instalado")
-            return
-        print(f"⚠️ Instalando pacote Termux {pkg}...")
-        subprocess.run(['pkg', 'install', '-y', pkg], check=True)
-        print(f"✅ Pacote Termux {pkg} instalado com sucesso!")
-    except subprocess.CalledProcessError as e:
-        print(f"❌ Erro ao instalar pacote Termux {pkg}: {e}")
-        sys.exit(1)
-    except Exception as e:
-        print(f"❌ Erro inesperado ao instalar {pkg}: {e}")
-        sys.exit(1)
-
-def instalar_dependencia_python(nome_pkg: str, pip_nome: str) -> None:
-    """Verifica e instala uma dependência Python, se necessária."""
-    try:
-        __import__(nome_pkg)
-        print(f"✅ Módulo Python {nome_pkg} já está instalado")
-    except ImportError:
-        print(f"⚠️ Instalando módulo Python {nome_pkg}...")
-        sistema = detectar_sistema()
-        pip_cmd = [sys.executable, "-m", "pip", "install", pip_nome]
-        if not sistema['termux']:
-            pip_cmd.append("--user")
-        try:
-            subprocess.run(pip_cmd, check=True)
-            print(f"✅ Módulo Python {nome_pkg} instalado com sucesso!")
-        except subprocess.CalledProcessError as e:
-            print(f"❌ Erro ao instalar módulo Python {nome_pkg}: {e}")
-            sys.exit(1)
-
-def instalar_poppler() -> bool:
-    """Instala o pacote poppler (pdftotext) de acordo com o sistema operacional."""
-    sistema = detectar_sistema()
-    print("⚠️ O pdftotext não está instalado. Tentando instalar automaticamente...")
-    try:
-        if sistema['termux']:
-            subprocess.run(['pkg', 'install', '-y', 'poppler'], check=True)
-            print("✅ poppler instalado com sucesso no Termux!")
-            return True
-        elif sistema['linux']:
-            print("⚠️ Instalando poppler-utils no Linux...")
-            subprocess.run(['sudo', 'apt-get', 'update'], check=True)
-            subprocess.run(['sudo', 'apt-get', 'install', '-y', 'poppler-utils'], check=True)
-            print("✅ poppler-utils instalado com sucesso no Linux!")
-            return True
-        elif sistema['macos']:
-            print("⚠️ Instalando poppler no macOS via Homebrew...")
-            try:
-                subprocess.run(['brew', '--version'], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            except FileNotFoundError:
-                print("❌ Homebrew não está instalado no macOS. Instale-o e depois execute: brew install poppler")
-                return False
-            subprocess.run(['brew', 'install', 'poppler'], check=True)
-            print("✅ poppler instalado com sucesso no macOS!")
-            return True
-        elif sistema['windows']:
-            print("⚠️ Instalando Poppler no Windows...")
-            import tempfile, urllib.request, winreg
-            poppler_url = "https://github.com/oschwartz10612/poppler-windows/releases/download/v23.11.0-0/Release-23.11.0-0.zip"
-            try:
-                temp_dir = tempfile.mkdtemp()
-                zip_path = os.path.join(temp_dir, "poppler.zip")
-                print("📥 Baixando Poppler...")
-                urllib.request.urlretrieve(poppler_url, zip_path)
-                program_files = os.environ.get('PROGRAMFILES', 'C:\\Program Files')
-                poppler_dir = os.path.join(program_files, "Poppler")
-                os.makedirs(poppler_dir, exist_ok=True)
-                print("📦 Extraindo arquivos...")
-                with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-                    root_dirs = {item.split('/')[0] for item in zip_ref.namelist() if '/' in item}
-                    if len(root_dirs) == 1:
-                        root_dir = root_dirs.pop()
-                        zip_ref.extractall(temp_dir)
-                        extracted_dir = os.path.join(temp_dir, root_dir)
-                        for item in os.listdir(extracted_dir):
-                            src = os.path.join(extracted_dir, item)
-                            dst = os.path.join(poppler_dir, item)
-                            if os.path.exists(dst):
-                                if os.path.isdir(dst):
-                                    shutil.rmtree(dst)
-                                else:
-                                    os.remove(dst)
-                            shutil.move(src, dst)
-                    else:
-                        zip_ref.extractall(poppler_dir)
-                print("🔧 Adicionando ao PATH do sistema...")
-                bin_dir = os.path.join(poppler_dir, "bin")
-                try:
-                    key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment", 0, winreg.KEY_ALL_ACCESS)
-                    try:
-                        path, _ = winreg.QueryValueEx(key, "PATH")
-                        if bin_dir.lower() not in path.lower():
-                            new_path = path + ";" + bin_dir
-                            winreg.SetValueEx(key, "PATH", 0, winreg.REG_EXPAND_SZ, new_path)
-                            subprocess.run(["setx", "PATH", new_path], check=True, capture_output=True)
-                    except FileNotFoundError:
-                        winreg.SetValueEx(key, "PATH", 0, winreg.REG_EXPAND_SZ, bin_dir)
-                    finally:
-                        winreg.CloseKey(key)
-                except Exception as e:
-                    print(f"⚠️ Erro ao atualizar o PATH no Windows: {e}")
-                os.environ["PATH"] = bin_dir + ";" + os.environ.get("PATH", "")
-                shutil.rmtree(temp_dir, ignore_errors=True)
-                print("✅ Poppler instalado com sucesso no Windows!")
-                print("⚠️ Você pode precisar reiniciar o terminal para que as alterações no PATH tenham efeito.")
-                try:
-                    subprocess.run([os.path.join(bin_dir, "pdftotext"), "-v"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
-                    return True
-                except (subprocess.CalledProcessError, FileNotFoundError):
-                    print("⚠️ Poppler foi instalado, mas o pdftotext ainda não está disponível.")
-                    return False
-            except Exception as e:
-                print(f"❌ Erro durante a instalação automática do Poppler: {str(e)}")
-                return False
-        else:
-            print("❌ Sistema operacional não suportado para instalação automática.")
+                    print("✅ Poppler já está no PATH do usuário.")
+            if shutil.which("pdftotext.exe"):
+                 print("✅ Poppler (pdftotext.exe) agora está acessível."); return True
+            else:
+                 print("⚠️ Poppler instalado, mas pdftotext.exe ainda não está no PATH da sessão atual. Adicione manualmente ou reinicie.")
+                 print(f"   Adicione este diretório ao seu PATH: {bin_path}"); return False
+        except Exception as e_winreg:
+            print(f"❌ Erro ao tentar modificar o PATH do usuário via registro: {e_winreg}")
+            print(f"   Por favor, adicione manualmente o diretório '{bin_path}' ao seu PATH.")
+            os.environ['PATH'] = f"{bin_path};{os.environ['PATH']}"
+            if shutil.which("pdftotext.exe"): return True
             return False
-    except subprocess.CalledProcessError as e:
-        print(f"❌ Erro ao instalar poppler: {e}")
-        return False
+    except requests.exceptions.RequestException as e_req:
+        print(f"❌ Erro ao baixar Poppler: {str(e_req)}"); return False
+    except zipfile.BadZipFile:
+        print("❌ Erro: O arquivo baixado do Poppler não é um ZIP válido ou está corrompido.")
+        if 'zip_path' in locals() and os.path.exists(zip_path): os.remove(zip_path); return False
     except Exception as e:
-        print(f"❌ Erro inesperado ao instalar poppler: {e}")
-        return False
+        print(f"❌ Erro inesperado ao instalar Poppler: {str(e)}")
+        if 'install_dir' in locals() and os.path.exists(install_dir): pass; return False
 
-def verificar_dependencias() -> None:
-    """Verifica e instala as dependências necessárias para o sistema atual."""
-    sistema = verificar_sistema()
-    if sistema['termux']:
-        pacotes_termux = ['python', 'python-pip', 'git', 'poppler', 'termux-api', 'ffmpeg']
-        for pkg in pacotes_termux:
-            instalar_dependencia_termux(pkg)
-    dependencias_python = {
-        'edge_tts': 'edge-tts>=6.1.5',
-        'langdetect': 'langdetect>=1.0.9',
-        'unidecode': 'unidecode>=1.3.6',
-        'num2words': 'num2words>=0.5.12',
-        'chardet': 'chardet>=5.0.0',
-        'requests': 'requests>=2.31.0',
-        'aioconsole': 'aioconsole>=0.6.0'
-    }
-    for nome_pkg, pip_nome in dependencias_python.items():
-        instalar_dependencia_python(nome_pkg, pip_nome)
-    try:
-        subprocess.run(['pdftotext', '-v'], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        print("✅ pdftotext (poppler) está funcionando corretamente")
-    except FileNotFoundError:
-        sistema = detectar_sistema()
-        if sistema['windows']:
-            print("📦 Poppler não encontrado. Iniciando instalação automática...")
-            if not instalar_poppler_windows():
-                print("❌ Não foi possível instalar o pdftotext automaticamente.")
-        elif sistema['macos']:
-            print("❌ O pdftotext não está instalado no sistema. Instale com: brew install poppler")
-        elif sistema['termux']:
-            print("❌ O pdftotext não está instalado no sistema. Tente executar: pkg install poppler")
-        else:
-            print("❌ O pdftotext não está instalado no sistema. Instale com: sudo apt-get install poppler-utils")
-    
-    # Verificar FFmpeg
-    try:
-        subprocess.run([FFMPEG_BIN, '-version'], stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
-        print("✅ FFmpeg está instalado e funcionando")
-    except FileNotFoundError:
-        print("❌ FFmpeg não está instalado. É necessário para processamento de áudio.")
-        if sistema['termux']:
-            print("Instale com: pkg install ffmpeg")
-        elif sistema['linux']:
-            print("Instale com: sudo apt-get install ffmpeg")
-        elif sistema['macos']:
-            print("Instale com: brew install ffmpeg")
-        elif sistema['windows']:
-            print("Baixe em: https://ffmpeg.org/download.html")
+def verificar_dependencias_essenciais():
+    print("\n🔍 Verificando dependências essenciais...")
+    detectar_sistema()
+    if not _verificar_comando([FFMPEG_BIN, '-version'], "FFmpeg encontrado.",
+        "FFmpeg não encontrado. Necessário para manipulação de áudio/vídeo.",
+        install_commands={'termux': ['pkg install ffmpeg'], 'linux': ['sudo apt install ffmpeg', 'sudo yum install ffmpeg', 'sudo dnf install ffmpeg'],
+                          'macos': ['brew install ffmpeg'], 'windows': ['Baixe em https://ffmpeg.org/download.html e adicione ao PATH']}):
+        print("    Algumas funcionalidades do script podem não funcionar sem FFmpeg.")
+    pdftotext_cmd = "pdftotext.exe" if SISTEMA_OPERACIONAL_INFO.get('windows') else "pdftotext"
+    if not _verificar_comando([pdftotext_cmd, '-v'], "Poppler (pdftotext) encontrado.",
+        "Poppler (pdftotext) não encontrado. Necessário para converter PDF para TXT.",
+        install_commands={'termux': ['pkg install poppler'], 'linux': ['sudo apt install poppler-utils', 'sudo yum install poppler-utils'],
+                          'macos': ['brew install poppler'], 'windows': ['Tentativa de instalação automática será feita se necessário.']}):
+        print("    A conversão de PDF para TXT não funcionará sem Poppler.")
+    print("✅ Verificação de dependências essenciais concluída.")
 
-try:
-    from num2words import num2words
-    print("✅ num2words importado com sucesso!")
-except ImportError:
-    print("\n❌ Erro ao importar num2words. Tente instalar manualmente: pip install --user num2words")
-    sys.exit(1)
-
-try:
-    from langdetect import detect, DetectorFactory
-    DetectorFactory.seed = 0
-    LANG_DETECT_AVAILABLE = True
-except ImportError:
-    print("\n⚠️ O módulo langdetect não está instalado. Para instalar, execute: pip install langdetect")
-    LANG_DETECT_AVAILABLE = False
-
-def limpar_tela() -> None:
-    """Limpa a tela do terminal de forma compatível com todos os sistemas."""
+def converter_pdf_para_txt(caminho_pdf: str, caminho_txt: str) -> bool:
     sistema = detectar_sistema()
+    pdftotext_executable = "pdftotext"
     if sistema['windows']:
-        os.system("cls")
-    else:
-        os.system("clear")
-
-async def obter_opcao(prompt: str, opcoes: list) -> str:
-    """Solicita ao usuário uma entrada que esteja dentre as opções válidas."""
-    while True:
-        escolha = (await aioconsole.ainput(prompt)).strip()
-        if escolha in opcoes:
-            return escolha
-        print("⚠️ Opção inválida! Tente novamente.")
-
-def gravar_progresso(arquivo_progresso: str, indice: int) -> None:
-    """Grava o índice da última parte processada em arquivo."""
-    with open(arquivo_progresso, 'w') as f:
-        f.write(str(indice))
-
-def ler_progresso(arquivo_progresso: str) -> int:
-    """Lê o índice da última parte processada a partir do arquivo de progresso."""
+        pdftotext_executable = shutil.which("pdftotext.exe")
+        if not pdftotext_executable:
+            if not instalar_poppler_windows(): print("❌ Falha ao instalar Poppler..."); return False
+            pdftotext_executable = shutil.which("pdftotext.exe")
+            if not pdftotext_executable: print("❌ pdftotext.exe não encontrado..."); return False
+    elif sistema['termux'] and not shutil.which("pdftotext"):
+        if not _instalar_dependencia_termux_auto("poppler"): print("❌ Falha ao instalar poppler no Termux..."); return False
+        pdftotext_executable = "pdftotext"
+    if not os.path.isfile(caminho_pdf): print(f"❌ Arquivo PDF não encontrado: {caminho_pdf}"); return False
     try:
-        with open(arquivo_progresso, 'r') as f:
-            return int(f.read().strip())
-    except Exception:
-        return 0
+        comando = [pdftotext_executable or "pdftotext", "-layout", "-enc", "UTF-8", caminho_pdf, caminho_txt]
+        resultado = subprocess.run(comando, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
+        if resultado.returncode != 0:
+            comando = [pdftotext_executable or "pdftotext", "-layout", caminho_pdf, caminho_txt]
+            resultado = subprocess.run(comando, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
+            if resultado.returncode != 0: print(f"❌ Erro ao converter PDF: {resultado.stderr.decode(errors='ignore')}"); return False
+        print(f"✅ PDF convertido para TXT: {caminho_txt}"); return True
+    except FileNotFoundError:
+        print(f"❌ Comando '{pdftotext_executable or 'pdftotext'}' não encontrado...")
+        if sistema['linux'] and not sistema['termux']: print("   Tente: sudo apt install poppler-utils")
+        elif sistema['macos']: print("   Tente: brew install poppler"); return False
+    except subprocess.CalledProcessError as e: print(f"❌ Erro ao converter PDF: {e.stderr.decode(errors='ignore')}"); return False
+    except Exception as e: print(f"❌ Erro inesperado ao converter PDF: {str(e)}"); return False
+
+# ================== FUNÇÕES DE UI E FLUXO ==================
+
+def limpar_tela() -> None: os.system('cls' if detectar_sistema()['windows'] else 'clear')
+
+async def obter_opcao_numerica(prompt: str, num_max: int, permitir_zero=False) -> int:
+    min_val = 0 if permitir_zero else 1
+    while True:
+        try:
+            escolha_str = await aioconsole.ainput(f"{prompt} [{min_val}-{num_max}]: ")
+            escolha = int(escolha_str)
+            if min_val <= escolha <= num_max: return escolha
+            else: print(f"⚠️ Opção inválida. Escolha um número entre {min_val} e {num_max}.")
+        except ValueError: print("⚠️ Entrada inválida. Por favor, digite um número.")
+        except asyncio.CancelledError: print("\n🚫 Entrada cancelada."); raise
+
+async def obter_confirmacao(prompt: str, default_yes=True) -> bool:
+    opcoes_prompt = "(S/n)" if default_yes else "(s/N)"
+    while True:
+        try:
+            resposta = await aioconsole.ainput(f"{prompt} {opcoes_prompt}: ")
+            resposta = resposta.strip().lower()
+            if not resposta: return default_yes
+            if resposta in ['s', 'sim']: return True
+            if resposta in ['n', 'nao', 'não']: return False
+            print("⚠️ Resposta inválida. Digite 's' ou 'n'.")
+        except asyncio.CancelledError: print("\n🚫 Entrada cancelada."); raise
+
+async def exibir_banner_e_menu(titulo_menu: str, opcoes_menu: dict):
+    limpar_tela()
+    print("╔════════════════════════════════════════════╗")
+    print("║         CONVERSOR TTS COMPLETO             ║")
+    print("║ Text-to-Speech + Melhoria de Áudio em PT-BR║")
+    print("╚════════════════════════════════════════════╝")
+    print(f"\n--- {titulo_menu.upper()} ---")
+    for num, desc in opcoes_menu.items(): print(f"{num}. {desc}")
+    return await obter_opcao_numerica("Opção", len(opcoes_menu), permitir_zero=('0' in opcoes_menu))
+
+# ================== FUNÇÕES DE MANIPULAÇÃO DE ARQUIVOS E CONTEÚDO ==================
+
+def detectar_encoding_arquivo(caminho_arquivo: str) -> str:
+    try:
+        with open(caminho_arquivo, 'rb') as f: raw_data = f.read(50000)
+        resultado = chardet.detect(raw_data)
+        encoding = resultado['encoding']
+        confidence = resultado['confidence']
+        if encoding and confidence > 0.7: return encoding
+        for enc_try in ENCODINGS_TENTATIVAS:
+            try:
+                with open(caminho_arquivo, 'r', encoding=enc_try) as f_test: f_test.read(1024)
+                return enc_try
+            except (UnicodeDecodeError, TypeError): continue
+        return 'utf-8'
+    except Exception as e: print(f"⚠️ Erro ao detectar encoding: {str(e)}..."); return 'utf-8'
+
+def ler_arquivo_texto(caminho_arquivo: str) -> str:
+    encoding = detectar_encoding_arquivo(caminho_arquivo)
+    try:
+        with open(caminho_arquivo, 'r', encoding=encoding, errors='replace') as f: return f.read()
+    except Exception as e: print(f"❌ Erro ao ler arquivo '{caminho_arquivo}': {str(e)}"); return ""
+
+def salvar_arquivo_texto(caminho_arquivo: str, conteudo: str):
+    try:
+        os.makedirs(os.path.dirname(caminho_arquivo), exist_ok=True)
+        with open(caminho_arquivo, 'w', encoding='utf-8') as f: f.write(conteudo)
+        print(f"✅ Arquivo salvo: {caminho_arquivo}")
+    except Exception as e: print(f"❌ Erro ao salvar arquivo '{caminho_arquivo}': {str(e)}")
 
 def limpar_nome_arquivo(nome: str) -> str:
-    """Remove ou substitui caracteres inválidos em sistemas de arquivos."""
-    nome_limpo = re.sub(r'[<>:"/\\|?*]', '', nome)
-    nome_limpo = nome_limpo.replace(' ', '_')
-    return nome_limpo
+    nome_sem_ext, ext = os.path.splitext(nome)
+    nome_normalizado = unicodedata.normalize('NFKD', nome_sem_ext).encode('ascii', 'ignore').decode('ascii')
+    nome_limpo = re.sub(r'[^\w\s-]', '', nome_normalizado).strip()
+    nome_limpo = re.sub(r'[-\s]+', '_', nome_limpo)
+    return nome_limpo + ext if ext else nome_limpo
 
-async def menu_converter_mp3_para_mp4():
-    await exibir_banner()
-    print("\n🎬 CONVERTER MP3 PARA MP4")
-
-    dir_download = "/storage/emulated/0/Download"
-    arquivos = listar_arquivos(dir_download, ['.mp3'])
-
-    if not arquivos:
-        print("\n⚠️ Nenhum arquivo MP3 encontrado na pasta Download.")
-        await aioconsole.ainput("\nPressione ENTER para voltar ao menu...")
-        return
-
-    print("\nArquivos MP3 encontrados:")
-    for i, nome in enumerate(arquivos, 1):
-        print(f"{i}. {nome}")
-
-    escolha = await obter_opcao("\nDigite o número do arquivo MP3 para converter: ", [str(i) for i in range(1, len(arquivos) + 1)])
-    arquivo_escolhido = arquivos[int(escolha) - 1]
-    caminho_mp3 = os.path.join(dir_download, arquivo_escolhido)
-
+def extrair_texto_de_epub(caminho_epub: str) -> str:
+    print(f"\n📖 Extraindo conteúdo de: {caminho_epub}")
+    texto_completo = ""
     try:
-        # 1) Obtém duração do MP3
-        duracao = obter_duracao_ffprobe(caminho_mp3)
+        with zipfile.ZipFile(caminho_epub, 'r') as epub_zip:
+            try:
+                container_xml = epub_zip.read('META-INF/container.xml').decode('utf-8')
+                opf_path_match = re.search(r'full-path="([^"]+)"', container_xml)
+                if not opf_path_match: raise Exception("Caminho do OPF não encontrado...")
+                opf_path = opf_path_match.group(1)
+                opf_content = epub_zip.read(opf_path).decode('utf-8')
+                opf_dir = os.path.dirname(opf_path)
+                spine_items = [m.group(1) for m in re.finditer(r'<itemref\s+idref="([^"]+)"', opf_content)]
+                if not spine_items: raise Exception("Nenhum item na 'spine'...")
+                manifest_hrefs = {m.group(1): m.group(2) for m in re.finditer(r'<item\s+id="([^"]+)"\s+href="([^"]+)"\s+media-type="application/xhtml\+xml"', opf_content)}
+                arquivos_xhtml_ordenados = []
+                for idref in spine_items:
+                    if idref in manifest_hrefs:
+                        xhtml_path_in_zip = os.path.normpath(os.path.join(opf_dir, manifest_hrefs[idref]))
+                        arquivos_xhtml_ordenados.append(xhtml_path_in_zip)
+                    else: print(f"⚠️ Aviso: ID '{idref}' da spine não encontrado...")
+                if not arquivos_xhtml_ordenados:
+                    print("⚠️ Falha ao ler 'spine'. Tentando todos os XHTML/HTML...")
+                    arquivos_xhtml_ordenados = sorted([f.filename for f in epub_zip.infolist() if f.filename.lower().endswith(('.html', '.xhtml')) and not re.search(r'(toc|nav|cover|ncx)', f.filename, re.IGNORECASE)])
+            except Exception as e_opf:
+                print(f"⚠️ Erro ao processar OPF/Spine: {e_opf}. Tentando todos XHTML/HTML.")
+                arquivos_xhtml_ordenados = sorted([f.filename for f in epub_zip.infolist() if f.filename.lower().endswith(('.html', '.xhtml')) and not re.search(r'(toc|nav|cover|ncx)', f.filename, re.IGNORECASE)])
+            if not arquivos_xhtml_ordenados: print("❌ Nenhum arquivo de conteúdo utilizável..."); return ""
+            h = html2text.HTML2Text(); h.ignore_links = True; h.ignore_images = True; h.ignore_emphasis = False; h.body_width = 0
+            for nome_arquivo in tqdm(arquivos_xhtml_ordenados, desc="Processando arquivos EPUB"):
+                try:
+                    html_bytes = epub_zip.read(nome_arquivo)
+                    detected_encoding = chardet.detect(html_bytes)['encoding'] or 'utf-8'
+                    html_texto = html_bytes.decode(detected_encoding, errors='replace')
+                    soup = BeautifulSoup(html_texto, 'html.parser')
+                    for tag in soup(['nav', 'header', 'footer', 'style', 'script', 'figure', 'figcaption', 'aside', 'link', 'meta']): tag.decompose()
+                    content_tag = soup.find('body') or soup
+                    if content_tag: texto_completo += h.handle(str(content_tag)) + "\n\n"
+                except KeyError: print(f"⚠️ Arquivo não encontrado no EPUB: {nome_arquivo}")
+                except Exception as e_file: print(f"❌ Erro ao processar '{nome_arquivo}': {e_file}")
+        if not texto_completo.strip(): print("⚠️ Nenhum conteúdo textual extraído..."); return ""
+        return texto_completo
+    except FileNotFoundError: print(f"❌ Arquivo EPUB não encontrado: {caminho_epub}")
+    except zipfile.BadZipFile: print(f"❌ Arquivo EPUB inválido: {caminho_epub}")
+    except Exception as e: print(f"❌ Erro geral ao processar EPUB: {e}"); return ""
 
-        # 2) Pergunta ao usuário qual resolução deseja
-        resolucao = await escolher_resolucao()
+def dividir_texto_para_tts(texto_processado: str) -> list:
+    """Divide o texto em partes menores para TTS, respeitando parágrafos e frases,
+       buscando um equilíbrio para performance."""
+    partes_iniciais = texto_processado.split('\n\n') # Primeiro por parágrafos
+    partes_finais = []
+    # AJUSTE ESTE VALOR! Valores maiores = menos chunks.
+    # Comece com 7000-8000 para Termux, pode ir até 10000-12000 se a API aceitar bem.
+    # Se der muitos erros "NoAudioReceived", reduza.
+    LIMITE_CARACTERES_CHUNK_TTS = 7500
 
-        # 3) Monta o nome do arquivo de saída
-        saida_mp4 = os.path.splitext(caminho_mp3)[0] + ".mp4"
+    for p_inicial in partes_iniciais:
+        p_strip = p_inicial.strip()
+        if not p_strip:
+            continue
 
-        # 4) Chama a função com o parâmetro de resolução
-        criar_video_com_audio(caminho_mp3, saida_mp4, duracao, resolucao)
+        # Se o parágrafo inteiro já é menor que o limite, adiciona-o
+        if len(p_strip) < LIMITE_CARACTERES_CHUNK_TTS:
+            partes_finais.append(p_strip)
+            continue
 
-        print(f"\n✅ Vídeo gerado com sucesso: {saida_mp4}")
-    except Exception as e:
-        print(f"\n❌ Erro ao gerar vídeo: {e}")
+        # Se o parágrafo é maior, tenta dividir por frases, agrupando-as.
+        # Usar regex para dividir por frases, mantendo os delimitadores.
+        frases_com_delimitadores = re.split(r'([.!?…]+)', p_strip)
+        segmento_atual = ""
 
-    await aioconsole.ainput("\nPressione ENTER para continuar...")
+        idx_frase = 0
+        while idx_frase < len(frases_com_delimitadores):
+            frase_atual = frases_com_delimitadores[idx_frase].strip()
+            delimitador = ""
+            if idx_frase + 1 < len(frases_com_delimitadores):
+                delimitador = frases_com_delimitadores[idx_frase + 1].strip()
+            
+            trecho_completo = frase_atual
+            if delimitador: # Adiciona o delimitador se existir
+                trecho_completo += delimitador
+            trecho_completo = trecho_completo.strip()
 
-def unificar_audio(temp_files, arquivo_final) -> bool:
-    """Une os arquivos de áudio temporários em um único arquivo final."""
+            if not trecho_completo: # Pula se a frase/delimitador for vazio
+                idx_frase += 2 if delimitador else 1
+                continue
+
+            # Se adicionar o trecho atual não excede o limite do chunk
+            if len(segmento_atual) + len(trecho_completo) + (1 if segmento_atual else 0) <= LIMITE_CARACTERES_CHUNK_TTS:
+                segmento_atual += (" " if segmento_atual else "") + trecho_completo
+            else:
+                # O trecho atual faria o segmento exceder. Finaliza o segmento atual.
+                if segmento_atual: # Adiciona o segmento anterior se não estiver vazio
+                    partes_finais.append(segmento_atual)
+                
+                # O trecho atual se torna o novo segmento.
+                # Se o próprio trecho já for maior que o limite, precisa ser quebrado (caso raro para uma frase)
+                if len(trecho_completo) > LIMITE_CARACTERES_CHUNK_TTS:
+                    # Quebra o trecho grande em pedaços menores que o limite
+                    for i in range(0, len(trecho_completo), LIMITE_CARACTERES_CHUNK_TTS):
+                        partes_finais.append(trecho_completo[i:i+LIMITE_CARACTERES_CHUNK_TTS])
+                    segmento_atual = "" # Reseta, pois o trecho grande foi totalmente processado
+                else:
+                    segmento_atual = trecho_completo # Inicia novo segmento com o trecho atual
+
+            idx_frase += 2 if delimitador else 1 # Avança para a próxima frase e seu delimitador
+
+        # Adiciona o último segmento que pode ter sobrado
+        if segmento_atual:
+            partes_finais.append(segmento_atual)
+
+    return [p for p in partes_finais if p.strip()] # Garante que não há chunks vazios
+
+# ================== FUNÇÕES DE FFmpeg (ÁUDIO/VÍDEO) ==================
+
+# Regex para capturar progresso do ffmpeg (simplificado) - Verifique se já existe no topo do seu script
+FFMPEG_PROGRESS_RE = re.compile(r"time=(\d{2}):(\d{2}):(\d{2})\.(\d{2})")
+
+def _parse_ffmpeg_time(time_str: str) -> float:
+    """Converte tempo 'HH:MM:SS.ms' do FFmpeg para segundos."""
     try:
-        if shutil.which(FFMPEG_BIN):
-            list_file = os.path.join(os.path.dirname(arquivo_final), "file_list.txt")
-            with open(list_file, "w") as f:
-                for temp in temp_files:
-                    f.write(f"file '{os.path.abspath(temp)}'\n")
-            subprocess.run([FFMPEG_BIN, "-f", "concat", "-safe", "0", "-i", list_file, "-c", "copy", arquivo_final], check=True)
-            os.remove(list_file)
-        else:
-            # Fallback: concatenação binária (pode não funcionar perfeitamente para mp3)
-            with open(arquivo_final, "wb") as outfile:
-                for temp in temp_files:
-                    with open(temp, "rb") as infile:
-                        outfile.write(infile.read())
-        return True
-    except Exception as e:
-        print(f"❌ Erro na unificação dos arquivos: {e}")
+        match = FFMPEG_PROGRESS_RE.search(time_str) # Usa search em vez de match
+        if match:
+            h, m, s, ms = map(int, match.groups())
+            return h * 3600 + m * 60 + s + ms / 100.0
+    except Exception:
+        pass # Ignora erros de parsing
+    return 0.0
+
+def _executar_ffmpeg_comando(comando_ffmpeg: list, descricao_acao: str, total_duration: float = 0.0):
+    """Executa um comando FFmpeg, lida com erros e mostra progresso ou indicador de atividade."""
+    global CANCELAR_PROCESSAMENTO
+    if CANCELAR_PROCESSAMENTO:
+        print(f"🚫 {descricao_acao} cancelada.")
         return False
 
-async def atualizar_script() -> None:
-    """Atualiza o script para a versão mais recente do GitHub."""
-    await exibir_banner()
-    print("\n🔄 ATUALIZAÇÃO DO SCRIPT")
-    print("\nIsso irá baixar a versão mais recente do script do GitHub.")
-    confirmar = await obter_opcao("Deseja continuar? (s/n): ", ['s', 'n'])
-    if confirmar != 's':
-        print("\n❌ Atualização cancelada pelo usuário.")
-        await aioconsole.ainput("\nPressione ENTER para continuar...")
-        return
-    print("\n🔄 Baixando a versão mais recente...")
-    script_atual = os.path.abspath(__file__)
-    script_backup = script_atual + ".backup"
     try:
-        shutil.copy2(script_atual, script_backup)
-        print(f"✅ Backup criado: {script_backup}")
-    except Exception as e:
-        print(f"⚠️ Não foi possível criar backup: {str(e)}")
-        await aioconsole.ainput("\nPressione ENTER para continuar...")
-        return
-    sistema = detectar_sistema()
-    url = "https://raw.githubusercontent.com/JonJonesBR/Conversor_TTS/main/Conversor_TTS_com_MP4_09.04.2025.py"
-    try:
-        if sistema['windows']:
-            try:
-                response = requests.get(url)
-                if response.status_code == 200:
-                    with open(script_atual, 'wb') as f:
-                        f.write(response.content)
-                    print("✅ Script atualizado com sucesso!")
-                else:
-                    raise Exception(f"Erro ao baixar: código {response.status_code}")
-            except ImportError:
-                resultado = subprocess.run(["curl", "-o", script_atual, url], capture_output=True, text=True)
-                if resultado.returncode != 0:
-                    raise Exception(f"Erro curl: {resultado.stderr}")
-                print("✅ Script atualizado com sucesso!")
-        else:
-            resultado = subprocess.run(["curl", "-o", script_atual, url], capture_output=True, text=True)
-            if resultado.returncode != 0:
-                raise Exception(f"Erro curl: {resultado.stderr}")
-            print("✅ Script atualizado com sucesso!")
-        print("\n🔄 O script será reiniciado para aplicar as atualizações.")
-        await aioconsole.ainput("Pressione ENTER para continuar...")
-        python_exec = sys.executable
-        os.execl(python_exec, python_exec, script_atual)
-    except Exception as e:
-        print(f"\n❌ Erro durante a atualização: {str(e)}")
-        print(f"\n🔄 Restaurando backup...")
-        try:
-            shutil.copy2(script_backup, script_atual)
-            print("✅ Backup restaurado com sucesso!")
-        except Exception as e2:
-            print(f"❌ Erro ao restaurar backup: {str(e2)}")
-            print(f"⚠️ O backup está disponível em: {script_backup}")
-        await aioconsole.ainput("\nPressione ENTER para continuar...")
+        print(f"⚙️ Executando: {descricao_acao}...") # Mensagem inicial
 
-async def exibir_banner() -> None:
-    """Exibe o banner do programa."""
+        startupinfo = None
+        if platform.system() == "Windows":
+            startupinfo = subprocess.STARTUPINFO()
+            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            startupinfo.wShowWindow = subprocess.SW_HIDE
+
+        process = subprocess.Popen(comando_ffmpeg, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                   universal_newlines=True, encoding='utf-8', errors='ignore',
+                                   startupinfo=startupinfo)
+
+        stderr_output = ""
+        last_progress_time = time.monotonic()
+        pbar_ffmpeg = None
+        activity_indicator_time = time.monotonic() # Para o indicador de atividade simples
+
+        # Loop para ler stderr (para progresso) ou apenas esperar se não houver progresso
+        while process.poll() is None: # Enquanto o processo estiver rodando
+            if CANCELAR_PROCESSAMENTO:
+                try:
+                    print("🚫 Tentando terminar ffmpeg...")
+                    process.terminate()
+                    process.wait(timeout=2)
+                except Exception: pass
+                finally: return False
+
+            # Se temos duração, tentamos ler o progresso
+            if total_duration > 0:
+                line = process.stderr.readline() # Pode bloquear
+                if not line: # Se readline retorna vazio mas processo ainda roda
+                    time.sleep(0.05) # Evita busy-waiting
+                    continue
+                stderr_output += line
+                if 'time=' in line:
+                    current_time_loop = time.monotonic()
+                    if current_time_loop - last_progress_time > 0.5:
+                        elapsed_seconds = _parse_ffmpeg_time(line)
+                        if elapsed_seconds > 0:
+                            percent = min(100, (elapsed_seconds / total_duration) * 100)
+                            if pbar_ffmpeg is None:
+                                pbar_ffmpeg = tqdm(total=100, unit="%", desc=f"   {descricao_acao[:20]}", bar_format='{desc}: {percentage:3.0f}%|{bar}|')
+                            
+                            update_value = percent - pbar_ffmpeg.n
+                            if update_value > 0:
+                                pbar_ffmpeg.update(update_value)
+                            last_progress_time = current_time_loop
+            else:
+                # Se NÃO temos duração (ex: unificação), imprimimos um ponto periodicamente
+                current_time_loop = time.monotonic()
+                if current_time_loop - activity_indicator_time > 1.0: # A cada 1 segundo
+                    sys.stdout.write(".") # Imprime um ponto
+                    sys.stdout.flush()    # Garante que apareça
+                    activity_indicator_time = current_time_loop
+                time.sleep(0.1) # Pausa curta para não sobrecarregar o loop while
+
+        # Processo terminou
+        if not total_duration > 0: # Se estávamos mostrando pontos, imprime uma nova linha
+            print() # Para que a próxima mensagem não fique na mesma linha dos pontos
+
+        if pbar_ffmpeg:
+            if pbar_ffmpeg.n < 100: pbar_ffmpeg.update(100 - pbar_ffmpeg.n)
+            pbar_ffmpeg.close()
+
+        # Coleta o restante do stderr após o loop (importante para mensagens de erro completas)
+        stdout_final, stderr_final = process.communicate()
+        stderr_output += stderr_final
+        
+        return_code = process.returncode # Pega o código de retorno após communicate
+
+        if return_code != 0:
+            print(f"\n❌ Erro durante {descricao_acao} (código {return_code}):")
+            error_lines = stderr_output.strip().splitlines()
+            relevant_errors = [ln for ln in error_lines[-20:] if 'error' in ln.lower() or ln.strip().startswith('[') or "failed" in ln.lower()]
+            if not relevant_errors: relevant_errors = error_lines[-10:]
+            print("\n".join(f"   {line}" for line in relevant_errors))
+            return False
+
+        print(f"✅ {descricao_acao} concluída com sucesso.")
+        return True
+
+    except FileNotFoundError:
+        print(f"❌ Comando '{comando_ffmpeg[0]}' não encontrado. Verifique FFmpeg/FFprobe.")
+        return False
+    except Exception as e:
+        print(f"❌ Erro inesperado durante {descricao_acao}: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+def criar_video_com_audio_ffmpeg(audio_path, video_path, duracao_segundos, resolucao_str="640x360"): # Flag 'usar_progresso_leve' removida
+    """Cria um vídeo com tela preta a partir de um áudio, mostrando progresso percentual."""
+    if duracao_segundos <= 0:
+        print("⚠️ Duração inválida para criar vídeo.")
+        return False
+    comando = [
+        FFMPEG_BIN, '-y',
+        '-f', 'lavfi', '-i', f"color=c=black:s={resolucao_str}:r=1:d={duracao_segundos:.3f}",
+        '-i', audio_path,
+        '-c:v', 'libx264', '-preset', 'ultrafast', '-tune', 'stillimage',
+        '-c:a', 'aac', '-b:a', '128k',
+        '-pix_fmt', 'yuv420p',
+        '-shortest',
+        # '-progress', '-', '-nostats', # Mantém removido ou comentado, pois lemos o stderr padrão
+        video_path
+    ]
+
+    # SEMPRE passa a duração total para _executar_ffmpeg_comando para obter progresso percentual
+    return _executar_ffmpeg_comando(comando, f"criação de vídeo a partir de {Path(audio_path).name}", total_duration=duracao_segundos)
+
+# ================== MENUS PRINCIPAIS E LÓGICA DE OPERAÇÃO ==================
+
+async def _selecionar_arquivo_para_processamento(extensoes_permitidas: list) -> str:
+    sistema = detectar_sistema()
+    # Define diretório inicial baseado no SO
+    if sistema['termux'] or sistema['android']:
+        dir_atual = Path.home() / 'storage' / 'shared' / 'Download' # Caminho comum no Termux
+        if not dir_atual.exists(): # Fallback para o home do Termux
+            dir_atual = Path.home() / 'downloads'
+        if not dir_atual.exists(): # Fallback para o storage downloads
+             dir_atual = Path("/storage/emulated/0/Download")
+    elif sistema['windows']:
+        dir_atual = Path.home() / 'Downloads'
+        if not dir_atual.exists(): dir_atual = Path.home() / 'Desktop' # Fallback
+    else: # Linux, macOS
+        dir_atual = Path.home() / 'Downloads'
+        if not dir_atual.exists(): dir_atual = Path.home() # Fallback
+
+    if not dir_atual.is_dir(): # Se o caminho não for um diretório válido
+        dir_atual = Path.cwd()
+        print(f"⚠️ Pasta Downloads padrão não encontrada ou inválida, usando diretório atual: {dir_atual}")
+
+
+    while True:
+        limpar_tela()
+        print(f"📂 SELEÇÃO DE ARQUIVO (Extensões: {', '.join(extensoes_permitidas)})")
+        print(f"\nDiretório atual: {dir_atual}")
+        
+        itens_no_diretorio = []
+        try:
+            # Adiciona ".." para subir um nível
+            if dir_atual.parent != dir_atual: # Não mostrar ".." se já estiver na raiz
+                itens_no_diretorio.append(("[..] (Voltar)", dir_atual.parent, True)) # (Nome, Path, É Diretório)
+            
+            # Listar diretórios primeiro, depois arquivos
+            diretorios_listados = []
+            arquivos_listados = []
+
+            for item in sorted(list(dir_atual.iterdir()), key=lambda p: (not p.is_dir(), p.name.lower())):
+                if item.is_dir():
+                    diretorios_listados.append((f"[{item.name}]", item, True))
+                elif item.suffix.lower() in extensoes_permitidas:
+                    arquivos_listados.append((item.name, item, False))
+            
+            itens_no_diretorio.extend(diretorios_listados)
+            itens_no_diretorio.extend(arquivos_listados)
+
+        except PermissionError:
+            print(f"❌ Permissão negada para acessar: {dir_atual}")
+            # Tenta voltar para o diretório pai ou home se der erro de permissão
+            if dir_atual.parent != dir_atual: dir_atual = dir_atual.parent
+            else: dir_atual = Path.home()
+            await asyncio.sleep(2)
+            continue
+        except Exception as e:
+            print(f"❌ Erro ao listar diretório {dir_atual}: {e}")
+            dir_atual = Path.home() # Tenta resetar para home
+            await asyncio.sleep(2)
+            continue
+
+
+        if not any(not item[2] for item in itens_no_diretorio): # Verifica se há algum arquivo (não diretório) na lista
+             # A mensagem só deve aparecer se não houver arquivos, mesmo que haja o [..]
+             is_root_and_empty = dir_atual.parent == dir_atual and not any(item_path.is_file() for _, item_path, _ in itens_no_diretorio if item_path.is_file())
+             if not itens_no_diretorio or (len(itens_no_diretorio) == 1 and itens_no_diretorio[0][0].startswith("[..]")) or is_root_and_empty:
+                 print(f"\n⚠️ Nenhum arquivo com as extensões permitidas ({', '.join(extensoes_permitidas)}) encontrado em {dir_atual}")
+
+
+        for i, (nome, _, is_dir) in enumerate(itens_no_diretorio):
+            print(f"{i+1}. {nome}")
+        
+        print("\nOpções:")
+        print("M. Digitar caminho manualmente")
+        print("V. Voltar ao menu anterior")
+
+        try:
+            # --- CORREÇÃO APLICADA AQUI ---
+            raw_input_str = await aioconsole.ainput("\nEscolha uma opção ou número: ")
+            escolha_str = raw_input_str.strip().upper()
+            # --- FIM DA CORREÇÃO ---
+
+            if escolha_str == 'V': return ""
+            if escolha_str == 'M':
+                caminho_manual_raw = await aioconsole.ainput("Digite o caminho completo do arquivo: ")
+                caminho_manual_str = caminho_manual_raw.strip() # Strip antes de criar o Path
+                if not caminho_manual_str: # Input vazio
+                    print("⚠️ Caminho não pode ser vazio.")
+                    await asyncio.sleep(1.5)
+                    continue
+
+                caminho_manual_path = Path(caminho_manual_str)
+                if caminho_manual_path.is_file() and caminho_manual_path.suffix.lower() in extensoes_permitidas:
+                    return str(caminho_manual_path)
+                else:
+                    print(f"❌ Caminho inválido ('{caminho_manual_str}') ou tipo de arquivo não permitido.")
+                    await asyncio.sleep(1.5)
+                    continue
+            
+            if escolha_str.isdigit():
+                idx_escolha = int(escolha_str) - 1
+                if 0 <= idx_escolha < len(itens_no_diretorio):
+                    nome_sel, path_sel, is_dir_sel = itens_no_diretorio[idx_escolha]
+                    if is_dir_sel:
+                        dir_atual = path_sel
+                    else: # É arquivo
+                        return str(path_sel)
+                else:
+                    print("❌ Opção numérica inválida.")
+            else:
+                print("❌ Opção inválida.")
+            await asyncio.sleep(1)
+
+        except (ValueError, IndexError):
+            print("❌ Seleção inválida.")
+            await asyncio.sleep(1)
+        except asyncio.CancelledError: # Trata Ctrl+C durante o input
+            print("\n🚫 Seleção cancelada.")
+            return "" # Ou raise para ser pego mais acima
+
+async def _processar_arquivo_selecionado_para_texto(caminho_arquivo_orig: str) -> str:
+    if not caminho_arquivo_orig: return ""
+    path_obj = Path(caminho_arquivo_orig); nome_base_limpo = limpar_nome_arquivo(path_obj.stem)
+    dir_saida = path_obj.parent; caminho_txt_formatado = dir_saida / f"{nome_base_limpo}_formatado.txt"
+    if caminho_txt_formatado.exists() and caminho_txt_formatado.name != path_obj.name :
+        if not await obter_confirmacao(f"Arquivo '{caminho_txt_formatado.name}' já existe. Reprocessar?", default_yes=False):
+            return str(caminho_txt_formatado)
+    texto_bruto = ""; extensao = path_obj.suffix.lower()
+    if extensao == '.pdf':
+        caminho_txt_temporario = dir_saida / f"{nome_base_limpo}_tempExtraido.txt"
+        if not converter_pdf_para_txt(str(path_obj), str(caminho_txt_temporario)):
+            print("❌ Falha na conversão PDF.");
+            if caminho_txt_temporario.exists(): os.remove(caminho_txt_temporario); return ""
+        texto_bruto = ler_arquivo_texto(str(caminho_txt_temporario))
+        if caminho_txt_temporario.exists(): os.remove(caminho_txt_temporario)
+    elif extensao == '.epub': texto_bruto = extrair_texto_de_epub(str(path_obj))
+    elif extensao == '.txt': texto_bruto = ler_arquivo_texto(str(path_obj))
+    else: print(f"❌ Formato não suportado: {extensao}"); return ""
+    if not texto_bruto.strip(): print("❌ Conteúdo do arquivo vazio."); return ""
+    texto_final_formatado = formatar_texto_para_tts(texto_bruto)
+    salvar_arquivo_texto(str(caminho_txt_formatado), texto_final_formatado)
+    if detectar_sistema()['windows'] or detectar_sistema()['macos'] or \
+       (detectar_sistema()['linux'] and not detectar_sistema()['android']):
+        if await obter_confirmacao("Abrir TXT formatado para edição?"):
+            print(f"📝 Abrindo '{caminho_txt_formatado.name}'...");
+            try:
+                if detectar_sistema()['windows']: os.startfile(caminho_txt_formatado)
+                else: subprocess.run(['xdg-open', str(caminho_txt_formatado)] if detectar_sistema()['linux'] else ['open', str(caminho_txt_formatado)], check=True)
+                await aioconsole.ainput("Pressione ENTER após salvar edições...")
+            except Exception as e_edit: print(f"❌ Não foi possível abrir editor: {e_edit}")
+    elif detectar_sistema()['android']:
+        print(f"✅ Arquivo formatado salvo: {caminho_txt_formatado}")
+        print("   No Android, edite manualmente se necessário e selecione '_formatado.txt'.")
+    return str(caminho_txt_formatado)
+
+async def _converter_chunk_tts(texto_chunk: str, voz: str, caminho_saida_temp: str, indice_chunk: int, total_chunks: int) -> bool:
+    """Converte um único chunk de texto para áudio, pulando se já existir e for válido."""
+    global CANCELAR_PROCESSAMENTO
+    
+    # --- INÍCIO DA VERIFICAÇÃO DE ARQUIVO EXISTENTE ---
+    path_saida_obj = Path(caminho_saida_temp)
+    if path_saida_obj.exists() and path_saida_obj.stat().st_size > 200: # 200 bytes como um mínimo para um MP3 válido
+        # Não precisa imprimir sempre, pode poluir o log para muitos arquivos.
+        # Apenas se desejar um feedback explícito de que pulou.
+        # print(f"⏭️  Chunk {indice_chunk}/{total_chunks} já convertido e válido. Pulando.")
+        return True # Considera como sucesso, pois o arquivo já existe e é válido
+    # --- FIM DA VERIFICAÇÃO DE ARQUIVO EXISTENTE ---
+
+    tentativas = 0
+    while tentativas < MAX_TTS_TENTATIVAS:
+        if CANCELAR_PROCESSAMENTO: return False
+        try:
+            if not texto_chunk or not texto_chunk.strip():
+                print(f"⚠️ Chunk {indice_chunk}/{total_chunks} vazio ou inválido, pulando (interno).")
+                path_saida_obj.unlink(missing_ok=True) # Remove se existir um inválido
+                return True 
+
+            # Feedback de que está tentando converter (pode ser útil se a verificação acima não imprimir)
+            # print(f"🎙️  Convertendo chunk {indice_chunk}/{total_chunks}...") # Opcional
+
+            communicate = edge_tts.Communicate(texto_chunk, voz)
+            await communicate.save(caminho_saida_temp)
+
+            if path_saida_obj.exists() and path_saida_obj.stat().st_size > 200:
+                return True
+            else:
+                print(f"⚠️ Arquivo áudio chunk {indice_chunk} vazio/pequeno (tentativa {tentativas + 1}).")
+                path_saida_obj.unlink(missing_ok=True)
+        
+        except edge_tts.exceptions.NoAudioReceived:
+             print(f"❌ Sem áudio chunk {indice_chunk} (tentativa {tentativas + 1}).")
+             path_saida_obj.unlink(missing_ok=True)
+        except Exception as e:
+            print(f"❌ Erro TTS chunk {indice_chunk} (tentativa {tentativas + 1}): {str(e)}")
+            path_saida_obj.unlink(missing_ok=True)
+
+        tentativas += 1
+        if tentativas < MAX_TTS_TENTATIVAS:
+            print(f"   Retentando chunk {indice_chunk} em {2 * tentativas}s...")
+            await asyncio.sleep(2 * tentativas)
+        else:
+            print(f"❌ Falha definitiva chunk {indice_chunk} após {MAX_TTS_TENTATIVAS} tentativas.")
+            path_saida_obj.unlink(missing_ok=True)
+            return False
+            
+    return False # Fallback, não deve ser atingido normalmente
+
+def unificar_arquivos_audio_ffmpeg(lista_arquivos_temp: list, arquivo_final: str) -> bool:
+    """Une arquivos de áudio temporários em um único arquivo final usando FFmpeg."""
+    if not lista_arquivos_temp:
+        print("⚠️ Nenhum arquivo de áudio para unificar.")
+        return False
+    
+    # Cria um arquivo de lista para o FFmpeg concat demuxer
+    # Usar caminhos absolutos e sanitizados para o file list
+    dir_saida = os.path.dirname(arquivo_final)
+    os.makedirs(dir_saida, exist_ok=True) # Garante que o diretório de saída existe
+    # Limpa o nome do arquivo de lista para evitar caracteres problemáticos
+    nome_lista_limpo = limpar_nome_arquivo(f"_{Path(arquivo_final).stem}_filelist.txt")
+    lista_txt_path = Path(dir_saida) / nome_lista_limpo
+
+    try:
+        with open(lista_txt_path, "w", encoding='utf-8') as f_list:
+            for temp_file in lista_arquivos_temp:
+                # FFmpeg concat demuxer precisa de caminhos 'safe'
+                # Escapar caracteres especiais para o formato do arquivo de lista
+                safe_path = str(Path(temp_file).resolve()).replace("'", r"\'")
+                f_list.write(f"file '{safe_path}'\n")
+        
+        comando = [
+            FFMPEG_BIN, '-y', '-f', 'concat', '-safe', '0', # -safe 0 é necessário para caminhos absolutos
+            '-i', str(lista_txt_path), 
+            '-c', 'copy', # Copia os codecs sem reencodar
+            arquivo_final
+        ]
+        # A unificação com -c copy é rápida e não fornece progresso útil por tempo
+        return _executar_ffmpeg_comando(comando, f"unificação de áudio para {os.path.basename(arquivo_final)}")
+    except IOError as e:
+        print(f"❌ Erro ao criar arquivo de lista para FFmpeg: {e}")
+        return False
+    finally:
+        # Remove o arquivo de lista temporário
+        if lista_txt_path.exists():
+            try:
+                lista_txt_path.unlink()
+            except Exception as e_unlink:
+                print(f"⚠️ Não foi possível remover o arquivo de lista temporário {lista_txt_path}: {e_unlink}")
+
+async def iniciar_conversao_tts():
+    global CANCELAR_PROCESSAMENTO; CANCELAR_PROCESSAMENTO = False
+    caminho_arquivo_orig = await _selecionar_arquivo_para_processamento(['.txt', '.pdf', '.epub'])
+    if not caminho_arquivo_orig or CANCELAR_PROCESSAMENTO: return
+
+    caminho_txt_processado = await _processar_arquivo_selecionado_para_texto(caminho_arquivo_orig)
+    if not caminho_txt_processado or CANCELAR_PROCESSAMENTO: return
+
+    opcoes_voz = {str(i+1): voz for i, voz in enumerate(VOZES_PT_BR)}; opcoes_voz[str(len(VOZES_PT_BR)+1)] = "Voltar"
+    limpar_tela(); print("\n--- SELECIONAR VOZ ---"); [print(f"{i+1}. {v}") for i,v in enumerate(VOZES_PT_BR)]; print(f"{len(VOZES_PT_BR)+1}. Voltar")
+    escolha_voz_idx = await obter_opcao_numerica("Escolha uma voz", len(VOZES_PT_BR)+1)
+    if escolha_voz_idx == len(VOZES_PT_BR)+1 or CANCELAR_PROCESSAMENTO: return
+    voz_escolhida = VOZES_PT_BR[escolha_voz_idx - 1]
+
+    texto_para_converter = ler_arquivo_texto(caminho_txt_processado)
+    if not texto_para_converter.strip() or CANCELAR_PROCESSAMENTO:
+        print("❌ Arquivo de texto processado vazio."); return
+
+    print("\n⏳ Dividindo texto para TTS...")
+    partes_texto = dividir_texto_para_tts(texto_para_converter) # Use a versão otimizada desta função
+    total_partes = len(partes_texto)
+
+    if total_partes == 0:
+        print("❌ Nenhuma parte de texto para converter após divisão."); return
+
+    print(f"📊 Texto dividido em {total_partes} parte(s) para TTS.")
+    print("   Pressione CTRL+C para tentar cancelar a qualquer momento.")
+
+    path_txt_obj = Path(caminho_txt_processado)
+    nome_base_audio = limpar_nome_arquivo(path_txt_obj.stem.replace("_formatado", ""))
+    dir_saida_audio = path_txt_obj.parent / f"{nome_base_audio}_AUDIO_TTS"
+    dir_saida_audio.mkdir(parents=True, exist_ok=True)
+
+    start_time_total_tts = time.monotonic()
+    arquivos_mp3_temporarios_nomes = [str(dir_saida_audio / f"temp_{nome_base_audio}_{i+1:04d}.mp3") for i in range(total_partes)]
+
+    print("\n🎙️ Iniciando conversão TTS das partes...")
+
+    # AJUSTE ESTE VALOR PARA O TERMUX! (Ex: 5, 8, 10)
+    LOTE_MAXIMO_TAREFAS_CONCORRENTES = 8
+
+    resultados_conversao = [False] * total_partes # Usaremos para rastrear sucesso/falha
+    arquivos_mp3_sucesso = []
+    
+    semaphore_api_calls = asyncio.Semaphore(LOTE_MAXIMO_TAREFAS_CONCORRENTES)
+    tarefas_gerais_tts = []
+
+    # Criar todas as tarefas
+    for idx_global_parte in range(total_partes):
+        if CANCELAR_PROCESSAMENTO: break
+        parte_txt = partes_texto[idx_global_parte]
+        caminho_temp_mp3 = arquivos_mp3_temporarios_nomes[idx_global_parte]
+
+        async def converter_com_semaforo(p_txt, voz, c_temp, idx_original_tarefa, total):
+            async with semaphore_api_calls:
+                if CANCELAR_PROCESSAMENTO: return (idx_original_tarefa, False) # Retorna índice e status
+                # Passa o índice original para poder mapear o resultado
+                sucesso = await _converter_chunk_tts(p_txt, voz, c_temp, idx_original_tarefa + 1, total)
+                return (idx_original_tarefa, sucesso)
+
+        # Guarda o índice original junto com a tarefa para mapeamento posterior
+        tarefa = asyncio.create_task(
+            converter_com_semaforo(
+                parte_txt, voz_escolhida, caminho_temp_mp3, idx_global_parte, total_partes
+            )
+        )
+        tarefas_gerais_tts.append(tarefa)
+    
+    if CANCELAR_PROCESSAMENTO:
+        print("🚫 Criação de tarefas TTS interrompida.")
+        for t in tarefas_gerais_tts: t.cancel()
+    
+    # --- INÍCIO DA LÓGICA DE PROGRESSO LEVE ---
+    partes_concluidas = 0
+    partes_com_falha = 0
+    tempo_ultima_atualizacao_progresso = time.monotonic()
+
+    def imprimir_progresso():
+        porcentagem = (partes_concluidas / total_partes) * 100 if total_partes > 0 else 0
+        # \r para voltar ao início da linha e sobrescrever
+        # sys.stdout.write para evitar nova linha automática do print
+        sys.stdout.write(f"\r   Progresso TTS: {partes_concluidas}/{total_partes} ({porcentagem:.1f}%) | Falhas: {partes_com_falha}   ")
+        sys.stdout.flush() # Garante que a saída seja exibida imediatamente
+
+    if tarefas_gerais_tts:
+        print(f"📦 Processando {len(tarefas_gerais_tts)} tarefas TTS com concorrência de {LOTE_MAXIMO_TAREFAS_CONCORRENTES}...")
+        imprimir_progresso() # Imprime o estado inicial (0%)
+
+        for future_task in asyncio.as_completed(tarefas_gerais_tts):
+            if CANCELAR_PROCESSAMENTO:
+                for t_restante in tarefas_gerais_tts:
+                    if not t_restante.done(): t_restante.cancel()
+                break
+            try:
+                idx_original, sucesso_tarefa = await future_task # Agora esperamos tupla (índice, sucesso)
+                
+                if sucesso_tarefa:
+                    resultados_conversao[idx_original] = True
+                else:
+                    resultados_conversao[idx_original] = False
+                    partes_com_falha += 1
+                
+            except asyncio.CancelledError:
+                # Não incrementa falha aqui, pois foi cancelado, não uma falha de conversão
+                pass 
+            except Exception as e_task:
+                print(f"\n   ⚠️ Erro inesperado ao processar tarefa TTS: {e_task}")
+                # Se a tarefa lançou uma exceção não tratada, contamos como falha
+                # Precisaríamos saber o índice da tarefa que falhou, o que é difícil aqui sem alterar mais
+                partes_com_falha +=1 
+
+            partes_concluidas += 1 # Incrementa partes processadas (concluídas ou falhadas)
+            
+            # Atualiza o progresso no console com menos frequência
+            agora = time.monotonic()
+            if agora - tempo_ultima_atualizacao_progresso > 0.3 or partes_concluidas == total_partes: # Atualiza a cada 0.3s ou no final
+                imprimir_progresso()
+                tempo_ultima_atualizacao_progresso = agora
+        
+        sys.stdout.write("\n") # Nova linha após a conclusão do progresso
+    # --- FIM DA LÓGICA DE PROGRESSO LEVE ---
+
+    # Verificação final e coleta de arquivos de sucesso (como antes)
+    print("\n🔍 Verificando arquivos gerados...")
+    for i in range(total_partes): # Revalida baseado nos arquivos e no array de resultados
+        if resultados_conversao[i] and Path(arquivos_mp3_temporarios_nomes[i]).exists() and Path(arquivos_mp3_temporarios_nomes[i]).stat().st_size > 200:
+            if arquivos_mp3_temporarios_nomes[i] not in arquivos_mp3_sucesso: # Evita duplicatas
+                arquivos_mp3_sucesso.append(arquivos_mp3_temporarios_nomes[i])
+        else: # Se não foi sucesso ou o arquivo não é válido, garante que resultado_conversao seja False
+            resultados_conversao[i] = False
+
+
+    if CANCELAR_PROCESSAMENTO:
+        print("🚫 Processo de TTS interrompido. Limpando arquivos temporários...")
+    elif not arquivos_mp3_sucesso and not any(resultados_conversao):
+        print("❌ Nenhuma parte foi convertida com sucesso.")
+
+
+    if arquivos_mp3_sucesso:
+        arquivo_final_mp3 = dir_saida_audio / f"{nome_base_audio}_COMPLETO.mp3"
+        print(f"\n🔄 Unificando {len(arquivos_mp3_sucesso)} arquivos de áudio...")
+        if unificar_arquivos_audio_ffmpeg(arquivos_mp3_sucesso, str(arquivo_final_mp3)):
+            tempo_total_tts = time.monotonic() - start_time_total_tts
+            print(f"🎉 Conversão TTS concluída em {tempo_total_tts:.2f}s!")
+            print(f"   Áudio final: {arquivo_final_mp3}")
+            print("🧹 Limpando temporários TTS unificados...")
+            for temp_f_success in arquivos_mp3_sucesso:
+                Path(temp_f_success).unlink(missing_ok=True)
+            if not CANCELAR_PROCESSAMENTO and await obter_confirmacao("Deseja aplicar melhorias (acelerar, converter para MP4) ao áudio gerado?"):
+                await _processar_melhoria_de_audio_video(str(arquivo_final_mp3))
+        else:
+            print("❌ Falha ao unificar os áudios. Os arquivos parciais permanecem.")
+            for f_temp in arquivos_mp3_sucesso: print(f"   - {f_temp}")
+    elif not CANCELAR_PROCESSAMENTO :
+        print("❌ Nenhum arquivo de áudio foi gerado com sucesso.")
+
+    print("🧹 Limpando arquivos temporários restantes (se houver)...")
+    for i in range(total_partes):
+        if not resultados_conversao[i] and Path(arquivos_mp3_temporarios_nomes[i]).exists():
+            Path(arquivos_mp3_temporarios_nomes[i]).unlink(missing_ok=True)
+
+    if not CANCELAR_PROCESSAMENTO:
+        await aioconsole.ainput("\nPressione ENTER para voltar ao menu...")
+
+async def testar_vozes_tts():
+    global CANCELAR_PROCESSAMENTO; CANCELAR_PROCESSAMENTO = False
+    while True:
+        if CANCELAR_PROCESSAMENTO: break
+        opcoes_teste_voz = {str(i+1): voz for i, voz in enumerate(VOZES_PT_BR)}; opcoes_teste_voz[str(len(VOZES_PT_BR)+1)] = "Voltar"
+        escolha_idx = await exibir_banner_e_menu("TESTAR VOZES", opcoes_teste_voz)
+        if escolha_idx == len(VOZES_PT_BR)+1 or CANCELAR_PROCESSAMENTO: break
+        voz_selecionada = VOZES_PT_BR[escolha_idx - 1]; texto_exemplo = "Olá! Esta é uma demonstração da minha voz."
+        print(f"\n🎙️ Testando voz: {voz_selecionada}...")
+        sistema = detectar_sistema(); pasta_testes = Path.home() / "Downloads" / "TTS_Testes_Voz"
+        if sistema['termux'] or sistema['android']: pasta_testes = Path("/storage/emulated/0/Download/TTS_Testes_Voz")
+        pasta_testes.mkdir(parents=True, exist_ok=True)
+        nome_arquivo_teste = limpar_nome_arquivo(f"teste_{voz_selecionada}.mp3"); caminho_arquivo_teste = pasta_testes / nome_arquivo_teste
+        try:
+            if await _converter_chunk_tts(texto_exemplo, voz_selecionada, str(caminho_arquivo_teste), 1, 1):
+                print(f"✅ Áudio de teste salvo: {caminho_arquivo_teste}")
+                if await obter_confirmacao("Ouvir áudio de teste?", default_yes=True):
+                    try:
+                        if sistema['windows']: os.startfile(caminho_arquivo_teste)
+                        elif sistema['termux'] and shutil.which("termux-media-player"): subprocess.run(['termux-media-player', 'play', str(caminho_arquivo_teste)], timeout=15)
+                        elif sistema['macos']: subprocess.run(['open', str(caminho_arquivo_teste)], check=True)
+                        elif sistema['linux']: subprocess.run(['xdg-open', str(caminho_arquivo_teste)], check=True)
+                        else: print("   Não foi possível reproduzir automaticamente.")
+                    except Exception as e_play: print(f"⚠️ Não reproduziu: {e_play}")
+            else: print(f"❌ Falha ao gerar áudio de teste para {voz_selecionada}.")
+        except asyncio.CancelledError: print("\n🚫 Teste de voz cancelado.");
+        if caminho_arquivo_teste.exists(): os.remove(caminho_arquivo_teste); break
+        if not await obter_confirmacao("Testar outra voz?", default_yes=True): break
+        if CANCELAR_PROCESSAMENTO: break
+
+def obter_duracao_midia(caminho_arquivo: str) -> float:
+    """Obtém a duração de um arquivo de mídia usando ffprobe."""
+    if not shutil.which(FFPROBE_BIN):
+        print(f"⚠️ {FFPROBE_BIN} não encontrado. Não é possível obter duração da mídia.")
+        return 0.0
+    comando = [
+        FFPROBE_BIN, '-v', 'error', '-show_entries', 'format=duration',
+        '-of', 'default=noprint_wrappers=1:nokey=1', caminho_arquivo
+    ]
+    try:
+        resultado = subprocess.run(comando, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True)
+        return float(resultado.stdout.strip())
+    except (subprocess.CalledProcessError, FileNotFoundError, ValueError) as e:
+        print(f"⚠️ Erro ao obter duração de '{os.path.basename(caminho_arquivo)}': {e}")
+        return 0.0
+
+def dividir_midia_ffmpeg(input_path, duracao_total_seg, duracao_max_parte_seg, nome_base_saida, extensao_saida):
+    """Divide um arquivo de mídia em partes menores usando FFmpeg (sem reencodar)."""
+    if duracao_total_seg <= duracao_max_parte_seg:
+        print(f"    ℹ️ Arquivo tem {duracao_total_seg/3600:.2f}h. Não precisa ser dividido (limite {duracao_max_parte_seg/3600:.1f}h).")
+        # Se não precisa dividir, mas o formato de saída é diferente, ou apenas para consistência,
+        # podemos copiar para o nome da "parte 1"
+        output_single_part_path = f"{nome_base_saida}_parte1{extensao_saida}"
+        try:
+            # Usa copy2 para preservar metadados se possível
+            shutil.copy2(input_path, output_single_part_path)
+            print(f"    ✅ Arquivo copiado para: {output_single_part_path}")
+            return [output_single_part_path] # Retorna lista com o único arquivo
+        except Exception as e:
+            print(f"    ❌ Erro ao copiar arquivo original para o nome da parte: {e}")
+            return [] # Falhou
+
+    num_partes = ceil(duracao_total_seg / duracao_max_parte_seg)
+    print(f"\n    📄 Arquivo tem {duracao_total_seg/3600:.2f}h. Será dividido em {num_partes} partes de até {duracao_max_parte_seg/3600:.1f}h.")
+    
+    arquivos_gerados = []
+    for i in range(num_partes):
+        if CANCELAR_PROCESSAMENTO:
+            print("    🚫 Divisão cancelada pelo usuário.")
+            break
+            
+        inicio_seg = i * duracao_max_parte_seg
+        # A duração da parte é min(duração_max, restante_do_arquivo)
+        # Isso é tratado pelo -t do ffmpeg se o tempo final for menor que -t
+        # Para garantir que a última parte não exceda o necessário, podemos calcular
+        # a duração real desta parte, embora -t lide com isso.
+        duracao_segmento_seg = min(duracao_max_parte_seg, duracao_total_seg - inicio_seg)
+        if duracao_segmento_seg <= 0: # Evita criar partes vazias se houver erro de cálculo
+             continue
+             
+        output_path_parte = f"{nome_base_saida}_parte{i+1}{extensao_saida}"
+        
+        print(f"    🎞️ Criando parte {i+1}/{num_partes}...")
+        comando = [
+            FFMPEG_BIN, '-y', 
+            '-ss', str(inicio_seg),      # Ponto inicial
+            '-i', input_path,
+            '-t', str(duracao_segmento_seg), # Duração MÁXIMA desta parte (FFmpeg corta no fim do arquivo se for menor)
+            '-c', 'copy',               # Sem reencodar, muito mais rápido
+            output_path_parte
+        ]
+        # Chamamos _executar_ffmpeg_comando SEM total_duration, pois -c copy não dá progresso percentual
+        if _executar_ffmpeg_comando(comando, f"criação da parte {i+1}"):
+            arquivos_gerados.append(output_path_parte)
+        else:
+            print(f"    ❌ Falha ao criar parte {i+1}. A divisão pode estar incompleta.")
+            # Decide se continua ou para. Por ora, continua.
+    return arquivos_gerados
+
+async def _processar_melhoria_de_audio_video(caminho_arquivo_entrada: str):
+    global CANCELAR_PROCESSAMENTO
+    CANCELAR_PROCESSAMENTO = False
+    
+    path_entrada_obj = Path(caminho_arquivo_entrada)
+    if not path_entrada_obj.exists():
+        print(f"❌ Arquivo de entrada não encontrado: {caminho_arquivo_entrada}")
+        return
+
+    print(f"\n⚡ Melhorando arquivo: {path_entrada_obj.name}")
+
+    # Velocidade
+    velocidade = 1.0 
+    while True:
+        try:
+            velocidade_str = await aioconsole.ainput("Informe a velocidade (ex: 1.5, padrão 1.0): ")
+            if not velocidade_str.strip(): break
+            velocidade = float(velocidade_str)
+            if 0.25 <= velocidade <= 5.0: break
+            else: print("⚠️ Velocidade fora do intervalo (0.25x - 5.0x).")
+        except ValueError: print("⚠️ Entrada inválida.")
+        except asyncio.CancelledError: return
+    if CANCELAR_PROCESSAMENTO: return
+
+    # Formato de saída
+    is_video_input = path_entrada_obj.suffix.lower() in ['.mp4', '.mkv', '.avi', '.mov', '.webm']
+    formato_saida = ""
+    if is_video_input:
+        formato_saida = ".mp4" if await obter_confirmacao("Manter vídeo (MP4)? (S=vídeo, N=áudio MP3)", True) else ".mp3"
+    else: 
+        formato_saida = ".mp4" if await obter_confirmacao("Gerar vídeo com tela preta (MP4)? (S=vídeo, N=áudio MP3)", False) else ".mp3"
+    if CANCELAR_PROCESSAMENTO: return
+
+    # Resolução para vídeo de saída (AGORA FIXA)
+    resolucao_video_saida_str = "" 
+    if formato_saida == ".mp4":
+        resolucao_video_saida_str = RESOLUCOES_VIDEO['1'][0] # Fixa em 360p ("640x360")
+        desc_res_fixa = f"{RESOLUCOES_VIDEO['1'][1]} ({RESOLUCOES_VIDEO['1'][0]})" # "360p (640x360)"
+        print(f"ℹ️  Gerando MP4 com resolução padrão: {desc_res_fixa}")
+        # Não há mais menu de seleção aqui
+    
+    if CANCELAR_PROCESSAMENTO: return
+
+    # Divisão de arquivo
+    duracao_total_seg = obter_duracao_midia(str(path_entrada_obj)) # Garanta que obter_duracao_midia está definida
+    if duracao_total_seg == 0 and formato_saida == ".mp4":
+        print("❌ Não foi possível obter a duração do arquivo. Não é possível criar vídeo MP4.")
+        return
+
+    dividir = False; duracao_max_parte = LIMITE_SEGUNDOS_DIVISAO
+    if duracao_total_seg > duracao_max_parte: # Corrigido: usar duracao_max_parte aqui, não LIMITE_SEGUNDOS_DIVISAO diretamente na condição
+        if await obter_confirmacao(f"O arquivo tem {duracao_total_seg/3600:.2f}h. Dividir em partes de até {duracao_max_parte/3600:.0f}h?", True): # Usar duracao_max_parte
+            dividir = True
+            if await obter_confirmacao("Definir tamanho personalizado por parte (em horas)?", False):
+                while True:
+                    try:
+                        # Usar LIMITE_SEGUNDOS_DIVISAO para o prompt do máximo
+                        horas_str = await aioconsole.ainput(f"Horas por parte (ex: 2.5, máx {LIMITE_SEGUNDOS_DIVISAO/3600:.0f}): ")
+                        horas_parte = float(horas_str)
+                        # Validar contra o limite máximo original
+                        if 0.5 <= horas_parte <= LIMITE_SEGUNDOS_DIVISAO/3600: 
+                            duracao_max_parte = horas_parte * 3600 # Atualiza duracao_max_parte
+                            break
+                        else: print(f"⚠️ Horas devem estar entre 0.5 e {LIMITE_SEGUNDOS_DIVISAO/3600:.0f}.")
+                    except ValueError: print("⚠️ Número inválido.")
+                    except asyncio.CancelledError: return
+    if CANCELAR_PROCESSAMENTO: return
+
+    # Preparar nome de saída
+    nome_proc = limpar_nome_arquivo(f"{path_entrada_obj.stem}_veloc{str(velocidade).replace('.','_')}")
+    dir_out = path_entrada_obj.parent / f"{nome_proc}_PROCESSADO"; dir_out.mkdir(parents=True, exist_ok=True)
+    tmp_acel = dir_out / f"temp_acel{path_entrada_obj.suffix}"; entrada_prox = ""; dur_acel = 0.0
+
+    # 1. Acelerar
+    if velocidade != 1.0:
+        if not acelerar_midia_ffmpeg(str(path_entrada_obj), str(tmp_acel), velocidade, is_video_input): # Garanta que acelerar_midia_ffmpeg está definida
+            print("❌ Falha acelerar."); tmp_acel.unlink(missing_ok=True); return
+        entrada_prox = str(tmp_acel); dur_acel = obter_duracao_midia(entrada_prox)
+        if dur_acel == 0 and formato_saida == ".mp4": 
+            print("❌ Duração não obtida pós aceleração. Abortando MP4."); tmp_acel.unlink(missing_ok=True); return
+    else: 
+        entrada_prox = str(path_entrada_obj); dur_acel = duracao_total_seg
+    
+    if CANCELAR_PROCESSAMENTO: 
+        if Path(entrada_prox).resolve() != path_entrada_obj.resolve() and Path(entrada_prox).exists(): # Só remove se for temporário
+            Path(entrada_prox).unlink(missing_ok=True)
+        return
+
+    # 2. Converter para MP4 (se áudio -> MP4)
+    entrada_div = entrada_prox; tmp_vid_gerado = None
+    if formato_saida == ".mp4" and not is_video_input:
+        tmp_vid_gerado = dir_out / "temp_video_from_audio.mp4"
+        if not criar_video_com_audio_ffmpeg(entrada_prox, str(tmp_vid_gerado), dur_acel, resolucao_video_saida_str): # Garanta que criar_video_com_audio_ffmpeg está definida
+            print("❌ Falha criar vídeo."); 
+            if Path(entrada_prox).resolve() != path_entrada_obj.resolve(): Path(entrada_prox).unlink(missing_ok=True) 
+            tmp_vid_gerado.unlink(missing_ok=True); return
+        entrada_div = str(tmp_vid_gerado)
+        # Remove o arquivo temporário de aceleração se um vídeo foi gerado a partir dele E não era o arquivo original
+        if Path(entrada_prox).resolve() != path_entrada_obj.resolve() and Path(entrada_prox).resolve() != Path(tmp_vid_gerado).resolve():
+             Path(entrada_prox).unlink(missing_ok=True)
+
+    if CANCELAR_PROCESSAMENTO:
+        # Limpa temporários
+        if Path(entrada_prox).resolve() != path_entrada_obj.resolve() and Path(entrada_prox).exists() : Path(entrada_prox).unlink(missing_ok=True)
+        if tmp_vid_gerado and tmp_vid_gerado.exists(): tmp_vid_gerado.unlink(missing_ok=True)
+        return
+    
+    # 3. Dividir
+    nome_base_final = dir_out / nome_proc; arquivos_finais = []
+    if dividir:
+        arquivos_finais = dividir_midia_ffmpeg(entrada_div, dur_acel, duracao_max_parte, str(nome_base_final), formato_saida) # Garanta que dividir_midia_ffmpeg está definida
+    else:
+        arq_final_unico = f"{nome_base_final}{formato_saida}"
+        try:
+            p_entrada_div = Path(entrada_div)
+            # Se a entrada para divisão é o arquivo original E o formato de saída é o mesmo, apenas COPIAMOS.
+            if p_entrada_div.resolve() == path_entrada_obj.resolve() and path_entrada_obj.suffix.lower() == formato_saida: 
+                shutil.copy(entrada_div, arq_final_unico)
+            # Se o arquivo de entrada para divisão existe (e não é o caso acima), MOVEMOS
+            elif p_entrada_div.exists(): 
+                shutil.move(entrada_div, arq_final_unico)
+            # Caso especial: Entrada é vídeo, saída é MP3, e nenhuma operação de movimento/cópia ocorreu ainda (pode acontecer se não houver aceleração)
+            elif formato_saida == ".mp3" and is_video_input and p_entrada_div.exists(): 
+                 if not _executar_ffmpeg_comando([FFMPEG_BIN,'-y','-i',str(p_entrada_div),'-vn','-q:a','2',arq_final_unico], "Extraindo MP3", dur_acel): # Usar _executar_ffmpeg_comando
+                      print(f"❌ Falha ao extrair áudio para {arq_final_unico}")
+                      # Se a entrada para divisão era um temporário, removemos se a extração falhar
+                      if p_entrada_div.resolve() != path_entrada_obj.resolve(): p_entrada_div.unlink(missing_ok=True)
+                      return 
+            elif not Path(arq_final_unico).exists(): # Se o arquivo final não foi criado por nenhum dos caminhos acima
+                 print(f"⚠️ Arquivo de processamento intermediário '{entrada_div}' não encontrado ou não processado para '{arq_final_unico}'.")
+
+            if Path(arq_final_unico).exists(): 
+                print(f"✅ Arquivo final salvo: {arq_final_unico}")
+                arquivos_finais.append(arq_final_unico)
+            # else: # Se ainda não existe, uma mensagem de erro já teria sido impressa ou a lógica acima falhou
+                # print(f"DEBUG: Arquivo final '{arq_final_unico}' não foi criado e não se encaixou nos casos de erro.")
+
+
+        except Exception as e_final: print(f"❌ Erro ao finalizar arquivo único: {e_final}")
+
+    # Limpeza do arquivo que foi entrada para divisão, APENAS se ele foi um temporário e não o arquivo original
+    # e também não é o próprio arquivo final (caso não haja divisão e o arquivo só foi renomeado/movido)
+    p_entrada_div_obj = Path(entrada_div)
+    if p_entrada_div_obj.resolve() != path_entrada_obj.resolve() and \
+       (not arquivos_finais or p_entrada_div_obj.resolve() != Path(arquivos_finais[0]).resolve() if arquivos_finais else True) and \
+       p_entrada_div_obj.exists():
+        p_entrada_div_obj.unlink(missing_ok=True)
+    
+    if arquivos_finais: 
+        print("\n🎉 Processo de melhoria concluído!")
+        for f_gerado in arquivos_finais: print(f"   -> {f_gerado}")
+    else: 
+        print("❌ Nenhum arquivo foi gerado no processo de melhoria.")
+    
+    await aioconsole.ainput("\nPressione ENTER para voltar ao menu...")
+
+async def menu_melhorar_audio_video():
+    while True:
+        caminho_arquivo = await _selecionar_arquivo_para_processamento(['.mp3', '.wav', '.m4a', '.ogg', '.opus', '.flac', '.mp4', '.mkv', '.avi', '.mov', '.webm'])
+        if not caminho_arquivo or CANCELAR_PROCESSAMENTO: break
+        await _processar_melhoria_de_audio_video(caminho_arquivo)
+        if CANCELAR_PROCESSAMENTO: break
+        if not await obter_confirmacao("Melhorar outro arquivo?", default_yes=False): break
+
+async def menu_converter_mp3_para_mp4():
+    """Menu para converter MP3 para MP4 com tela preta, resolução fixa 360p.""" # Descrição atualizada
+    global CANCELAR_PROCESSAMENTO; CANCELAR_PROCESSAMENTO = False
+
+    resolucao_fixa_str = RESOLUCOES_VIDEO['1'][0]
+    resolucao_fixa_desc = RESOLUCOES_VIDEO['1'][1]
+
+    while True:
+        caminho_mp3 = await _selecionar_arquivo_para_processamento(['.mp3'])
+        if not caminho_mp3 or CANCELAR_PROCESSAMENTO: break
+
+        path_mp3_obj = Path(caminho_mp3)
+        duracao_mp3 = obter_duracao_midia(caminho_mp3)
+        if duracao_mp3 <= 0:
+            print("❌ Não foi possível obter a duração do MP3 ou é inválida.")
+            await asyncio.sleep(2); continue
+
+        print(f"\nℹ️  Convertendo MP3 para MP4 com resolução fixa: {resolucao_fixa_desc} ({resolucao_fixa_str}).")
+
+        if CANCELAR_PROCESSAMENTO: break
+
+        nome_video_saida = limpar_nome_arquivo(f"{path_mp3_obj.stem}_VIDEO_{resolucao_fixa_desc}.mp4")
+        caminho_video_saida = path_mp3_obj.with_name(nome_video_saida)
+
+        # --- CHAMADA CORRIGIDA: Remover usar_progresso_leve=True ---
+        if criar_video_com_audio_ffmpeg(caminho_mp3, str(caminho_video_saida), duracao_mp3, resolucao_fixa_str):
+        # --- FIM DA CORREÇÃO ---
+            print(f"✅ Vídeo gerado: {caminho_video_saida}")
+        else:
+            print(f"❌ Falha ao gerar vídeo a partir de {path_mp3_obj.name}")
+
+        if not await obter_confirmacao("Converter outro MP3 para MP4?", default_yes=False):
+            break
+        if CANCELAR_PROCESSAMENTO: break
+
+    if not CANCELAR_PROCESSAMENTO:
+        await aioconsole.ainput("\nPressione ENTER para voltar ao menu...")
+
+async def menu_dividir_video_existente():
+    global CANCELAR_PROCESSAMENTO; CANCELAR_PROCESSAMENTO = False
+    while True:
+        caminho_video_entrada = await _selecionar_arquivo_para_processamento(['.mp4', '.mkv', '.avi', '.mov', '.webm'])
+        if not caminho_video_entrada or CANCELAR_PROCESSAMENTO: break
+        path_video_obj = Path(caminho_video_entrada); duracao_total_seg = obter_duracao_midia(str(path_video_obj))
+        if duracao_total_seg <= LIMITE_SEGUNDOS_DIVISAO:
+            print(f"ℹ️ Vídeo '{path_video_obj.name}' não precisa ser dividido.");
+            if not await obter_confirmacao("Selecionar outro vídeo?", default_yes=False): break; continue
+        print(f"Vídeo '{path_video_obj.name}' tem {duracao_total_seg/3600:.2f}h.")
+        duracao_max_parte = LIMITE_SEGUNDOS_DIVISAO
+        if await obter_confirmacao("Tamanho personalizado por parte (horas)?", default_yes=False):
+            while True:
+                try:
+                    horas_str = await aioconsole.ainput(f"Horas/parte (0.5-{LIMITE_SEGUNDOS_DIVISAO/3600:.0f}): ")
+                    horas_parte = float(horas_str)
+                    if 0.5 <= horas_parte <= LIMITE_SEGUNDOS_DIVISAO/3600: duracao_max_parte = horas_parte * 3600; break
+                    else: print(f"⚠️ Horas entre 0.5 e {LIMITE_SEGUNDOS_DIVISAO/3600:.0f}.")
+                except ValueError: print("⚠️ Inválido.")
+                except asyncio.CancelledError: return
+        if CANCELAR_PROCESSAMENTO: break
+        nome_base_saida = path_video_obj.parent / limpar_nome_arquivo(f"{path_video_obj.stem}_dividido")
+        arquivos_gerados = dividir_midia_ffmpeg(str(path_video_obj), duracao_total_seg, duracao_max_parte, str(nome_base_saida), path_video_obj.suffix)
+        if arquivos_gerados: print("\n🎉 Divisão concluída!"); [print(f"   -> {f}") for f in arquivos_gerados]
+        else: print(f"❌ Falha ao dividir {path_video_obj.name} ou cancelado.")
+        if not await obter_confirmacao("Dividir outro vídeo?", default_yes=False): break
+        if CANCELAR_PROCESSAMENTO: break
+    await aioconsole.ainput("\nPressione ENTER para voltar...")
+
+async def exibir_ajuda():
+    """Exibe o guia de uso do script."""
     limpar_tela()
     print("""
 ╔════════════════════════════════════════════╗
-║         CONVERSOR TTS COMPLETO             ║
-║ Text-to-Speech + Melhoria de Áudio em PT-BR║
+║                 GUIA DE USO                ║
 ╚════════════════════════════════════════════╝
-""")
 
-async def menu_principal() -> str:
-    """Exibe o menu principal e retorna a opção escolhida."""
-    await exibir_banner()
-    print("\nEscolha uma opção:")
-    print("1. 🚀 CONVERTER TEXTO PARA ÁUDIO")
-    print("2. 🎙️ TESTAR VOZES")
-    print("3. ⚡ MELHORAR ÁUDIO EXISTENTE")
-    print("4. ✂️ DIVIDIR VÍDEO MP4")
-    print("5. ❓ AJUDA")
-    print("6. 🔄 ATUALIZAR")
-    print("7. 🎬 CONVERTER MP3 PARA MP4")
-    print("8. 🚪 SAIR")
-    return await obter_opcao("\nOpção: ", ['1', '2', '3', '4', '5', '6', '7', '8'])
+1.  CONVERTER TEXTO PARA ÁUDIO (TTS):
+    - Selecione um arquivo .txt, .pdf ou .epub.
+    - O script tentará formatar o texto (capítulos, números, etc.).
+    - Arquivos PDF/EPUB são convertidos para TXT formatado primeiro (_formatado.txt).
+    - Se não estiver no Android, você poderá editar o TXT formatado antes do TTS.
+    - Escolha uma voz para a conversão.
+    - O áudio será salvo em uma subpasta (ex: NOME_LIVRO_AUDIO_TTS).
+    - Após a conversão, você pode optar por melhorar o áudio gerado (item 3).
 
-def listar_videos_mp4(directory):
-    """Lista arquivos MP4 no diretório especificado"""
-    return [f for f in os.listdir(directory) if f.lower().endswith('.mp4')]
+2.  TESTAR VOZES TTS:
+    - Ouça amostras das vozes disponíveis para escolher a melhor.
+    - Os áudios de teste são salvos na sua pasta de Downloads (subpasta TTS_Testes_Voz).
 
-async def menu_vozes() -> str:
-    """Exibe o menu de seleção de vozes e retorna a voz escolhida."""
-    await exibir_banner()
-    print("\nVozes disponíveis:")
-    for i, voz in enumerate(VOZES_PT_BR, 1):
-        print(f"{i}. {voz}")
-    print(f"{len(VOZES_PT_BR) + 1}. Voltar")
-    opcoes = [str(i) for i in range(1, len(VOZES_PT_BR) + 2)]
-    escolha = await obter_opcao("\nEscolha uma voz: ", opcoes)
-    if escolha == str(len(VOZES_PT_BR) + 1):
-        return None
-    return VOZES_PT_BR[int(escolha) - 1]
+3.  MELHORAR ÁUDIO/VÍDEO (Velocidade, Formato):
+    - Nome antigo: "MUDAR VELOCIDADE MP3 E GERAR MP4"
+    - Selecione um arquivo de áudio ou vídeo existente.
+    - Ajuste a velocidade de reprodução (ex: 1.5 para 1.5x).
+    - Escolha o formato de saída: MP3 (áudio) ou MP4 (vídeo com tela preta/original).
+    - MP4 gerado usa resolução padrão 360p automaticamente.
+    - Arquivos longos (>12h por padrão) podem ser divididos automaticamente ou com tamanho customizado.
+    - O resultado é salvo em uma subpasta (ex: NOME_ARQUIVO_PROCESSADO).
 
-async def exibir_ajuda() -> None:
-    """Exibe o guia de ajuda do programa."""
-    await exibir_banner()
-    print("""
-📖 GUIA DE USO:
+4.  DIVIDIR VÍDEO LONGO:
+    - Selecione um arquivo de vídeo (MP4, MKV, etc.).
+    - Ideal para vídeos com mais de 12 horas (ou limite customizado).
+    - Divide o vídeo em partes menores sem recompressão (processo rápido).
+    - As partes são salvas na mesma pasta do original com sufixo _dividido_parteX.
 
-1. CONVERSÃO DE TEXTO PARA ÁUDIO:
-   • Prepare seu arquivo de texto (.txt) ou PDF (.pdf)
-   • Escolha uma voz e aguarde a conversão
-   • O áudio resultante pode ser melhorado na opção 3
+5.  CONVERTER MP3 PARA MP4 (Tela Preta):
+    - Selecione um arquivo MP3.
+    - Gera um vídeo MP4 com tela preta e o áudio do MP3.
+    - Usa resolução padrão 360p automaticamente.
+    - Mostra progresso durante a conversão.
 
-2. MELHORIA DE ÁUDIO:
-   • Acelere arquivos de áudio/vídeo existentes
-   • Escolha entre 0.5x e 2.0x de velocidade
-   • Converta para MP3 (áudio) ou MP4 (vídeo com tela preta)
-   • Arquivos longos são automaticamente divididos
+6.  ATUALIZAR SCRIPT:
+    - Baixa a versão mais recente do script do GitHub (requer conexão com a internet).
+    - Cria um backup do script atual antes de atualizar.
 
-4. DIVIDIR VÍDEO MP4:
-   • Divida vídeos longos em partes de até 12 horas
-   • Útil para processar vídeos muito grandes
-   • Mantém a qualidade original (sem re-encoding)
+7.  AJUDA:
+    - Exibe este guia de uso.
 
-6. CONVERTER MP3 PARA MP4:
-   • Gere vídeos com tela preta a partir de arquivos de áudio MP3
-   • Útil para publicar conteúdos de áudio em plataformas como YouTube
+0.  SAIR:
+    - Encerra o script.
 
-⚠️ OBSERVAÇÕES:
-• Para arquivos muito grandes, o processo pode demorar
-• Certifique-se de ter espaço em disco suficiente
-• No Android/Termux, os arquivos são salvos em /storage/emulated/0/Download
-""")
-    await aioconsole.ainput("\nPressione ENTER para voltar ao menu principal...")
+OBSERVAÇÕES IMPORTANTES:
+- Pressione CTRL+C para tentar cancelar operações longas (TTS, FFmpeg).
+- FFmpeg e Poppler (para PDFs) são dependências externas importantes. O script tenta ajudar na instalação se não encontrados.
+- No Android/Termux, pode ser necessário conceder permissão de armazenamento executando `termux-setup-storage` no terminal do Termux antes de usar o script.
+- Use `termux-wake-lock` antes de iniciar conversões TTS longas no Termux para evitar que o Android suspenda o processo. Use `termux-wake-unlock` depois.
+- Arquivos são geralmente salvos na mesma pasta do arquivo original ou em subpastas criadas pelo script.
+    """)
+    await aioconsole.ainput("Pressione ENTER para voltar ao menu...")
 
-async def testar_voz(voz: str) -> None:
-    """
-    Testa uma voz específica com um texto de exemplo e salva a amostra
-    em uma pasta na pasta Download do Android. Após a geração, retorna automaticamente.
-    """
-    texto_teste = "Olá! Esta é uma demonstração da minha voz."
-    communicate = edge_tts.Communicate(texto_teste, voz)
-    sistema = detectar_sistema()
-    if sistema['android'] or sistema['termux']:
-        download_folder = "/storage/emulated/0/Download"
-        test_folder = os.path.join(download_folder, "TTS_Teste_Voz")
-        os.makedirs(test_folder, exist_ok=True)
-        file_path = os.path.join(test_folder, f"teste_voz_{voz}.mp3")
-    else:
-        file_path = "teste_voz.mp3"
+async def atualizar_script():
+    global CANCELAR_PROCESSAMENTO; CANCELAR_PROCESSAMENTO = False
+    limpar_tela(); print("🔄 ATUALIZAÇÃO DO SCRIPT")
+    if not await obter_confirmacao("Baixar versão mais recente do GitHub?"): print("❌ Cancelado."); await asyncio.sleep(1); return
+    print("\n🔄 Baixando..."); script_atual_path = Path(__file__).resolve(); script_backup_path = script_atual_path.with_suffix(script_atual_path.suffix + ".backup")
+    try: shutil.copy2(script_atual_path, script_backup_path); print(f"✅ Backup: {script_backup_path.name}")
+    except Exception as e_backup:
+        print(f"⚠️ Sem backup: {e_backup}");
+        if not await obter_confirmacao("Continuar sem backup?", default_yes=False): return
+    url_script = "https://raw.githubusercontent.com/JonJonesBR/Conversor_TTS/main/Conversor_TTS_com_MP4_09.04.2025.py" # AJUSTE URL!
     try:
-        await communicate.save(file_path)
-        print(f"\n✅ Arquivo de teste gerado: {file_path}")
-        if sistema['termux']:
-            if shutil.which("termux-media-player"):
-                try:
-                    subprocess.run(['termux-media-player', 'play', file_path], timeout=10)
-                except subprocess.TimeoutExpired:
-                    print("Aviso: reprodução de áudio demorou, continuando...")
-            else:
-                print("termux-media-player não disponível, áudio não reproduzido.")
-        elif sistema['windows']:
-            os.startfile(file_path)
-        else:
-            subprocess.Popen(['xdg-open', file_path])
-        await asyncio.sleep(1)
-    except Exception as e:
-        print(f"\n❌ Erro ao testar voz: {str(e)}")
+        print(f"Baixando de: {url_script}"); response = requests.get(url_script, timeout=30); response.raise_for_status()
+        with open(script_atual_path, 'wb') as f: f.write(response.content)
+        print("✅ Script atualizado! Reiniciando..."); await aioconsole.ainput("Pressione ENTER para reiniciar...")
+        os.execl(sys.executable, sys.executable, str(script_atual_path), *sys.argv[1:])
+    except requests.exceptions.RequestException as e_req: print(f"\n❌ Erro de rede: {e_req}")
+    except Exception as e_update: print(f"\n❌ Erro na atualização: {e_update}")
+    if script_backup_path.exists():
+        print("\n🔄 Restaurando backup...");
+        try: shutil.copy2(script_backup_path, script_atual_path); print("✅ Backup restaurado!"); os.remove(script_backup_path)
+        except Exception as e_restore: print(f"❌ Erro ao restaurar: {e_restore}. Backup: {script_backup_path}")
+    await aioconsole.ainput("\nPressione ENTER para continuar...")
 
-def listar_arquivos(diretorio: str, extensoes: list = None) -> list:
-    """Lista arquivos no diretório especificado, filtrando por extensões se fornecido."""
-    arquivos = []
-    try:
-        for item in os.listdir(diretorio):
-            caminho_completo = os.path.join(diretorio, item)
-            if os.path.isfile(caminho_completo):
-                if not extensoes or os.path.splitext(item)[1].lower() in extensoes:
-                    arquivos.append(item)
-    except Exception as e:
-        print(f"\n⚠️ Erro ao listar arquivos: {str(e)}")
-    return sorted(arquivos)
+# ================== FUNÇÃO MAIN E LOOP PRINCIPAL ==================
 
-# ================== FUNÇÕES DE CORREÇÃO DE TEXTO ==================
-
-def normalizar_texto_corrigir(texto):
-    """Normaliza o texto preservando acentos."""
-    print("\n[1/5] Normalizando texto...")
-    return unicodedata.normalize('NFKC', texto)
-
-def corrigir_espacamento_corrigir(texto):
-    """Corrige espaçamentos desnecessários e remove espaços no início e fim das linhas."""
-    print("[2/5] Corrigindo espaçamento...")
-    texto = re.sub(r'\s+', ' ', texto)
-    texto = re.sub(r'^\s+|\s+$', '', texto, flags=re.MULTILINE)
-    return texto
-
-def ajustar_titulo_e_capitulos_corrigir(texto):
-    """
-    Ajusta título, autor e formata capítulos.
-    Tenta separar o cabeçalho (título e autor) se estiver em uma única linha.
-    """
-    print("[3/5] Ajustando título, autor e capítulos...")
-    pattern = r"^(?P<titulo>.+?)\s+(?P<autor>[A-Z][a-z]+(?:\s+[A-Z][a-z]+))\s+(?P<body>.*)$"
-    match = re.match(pattern, texto, re.DOTALL)
-    if match:
-        titulo = match.group("titulo").strip()
-        autor = match.group("autor").strip()
-        body = match.group("body").strip()
-        if not titulo.endswith(('.', '!', '?')):
-            titulo += '.'
-        if not autor.endswith(('.', '!', '?')):
-            autor += '.'
-        novo_texto = titulo + "\n" + autor + "\n\n" + body
-    else:
-        linhas = texto.splitlines()
-        header = []
-        corpo = []
-        non_empty_count = 0
-        for linha in linhas:
-            if linha.strip():
-                non_empty_count += 1
-                if non_empty_count <= 2:
-                    header.append(linha.strip())
-                else:
-                    corpo.append(linha)
-            else:
-                if non_empty_count >= 2:
-                    corpo.append(linha)
-        if len(header) == 1:
-            palavras = header[0].split()
-            if len(palavras) >= 4 and palavras[-1][0].isupper() and palavras[-2][0].isupper():
-                autor = " ".join(palavras[-2:])
-                titulo = " ".join(palavras[:-2])
-                header = [titulo.strip(), autor.strip()]
-        if header:
-            if not header[0].endswith(('.', '!', '?')):
-                header[0] += '.'
-        if len(header) > 1:
-            if not header[1].endswith(('.', '!', '?')):
-                header[1] += '.'
-        novo_texto = "\n".join(header + [""] + corpo)
-    novo_texto = re.sub(r'(?i)\b(capítulo\s*\d+)\b', r'\n\n\1.\n\n', novo_texto)
-    return novo_texto
-
-def inserir_quebra_apos_ponto_corrigir(texto):
-    """Insere uma quebra de parágrafo após cada ponto final."""
-    print("[4/5] Inserindo quebra de parágrafo após cada ponto final...")
-    
-    # Primeiro normaliza espaços em branco e quebras existentes
-    texto = re.sub(r'\s+', ' ', texto)  # Substitui múltiplos espaços por um único
-    texto = re.sub(r'(?<!\n)\n(?!\n)', ' ', texto)  # Remove quebras de linha isoladas
-    
-    # Insere quebras de parágrafo apenas após pontos finais
-    texto = re.sub(r'\.\s+', '.\n\n', texto)
-    
-    # Remove possíveis múltiplas quebras criadas
-    texto = re.sub(r'\n{3,}', '\n\n', texto)
-    
-    # Garante que não haja espaços antes de quebras
-    texto = re.sub(r' +\n', '\n', texto)
-    
-    return texto
-
-def formatar_paragrafos_corrigir(texto):
-    """Formata os parágrafos garantindo uma linha em branco entre eles."""
-    print("[5/5] Formatando parágrafos...")
-    paragrafos = [p.strip() for p in texto.split('\n\n') if p.strip()]
-    return '\n\n'.join(paragrafos)
-
-def expandir_abreviacoes(texto):
-    abreviacoes = {
-    r'\bDr\.(?=\s)': 'Doutor',
-    r'\bD\.(?=\s)': 'Dona',
-    r'\bDra\.(?=\s)': 'Doutora',
-    r'\bSr\.(?=\s)': 'Senhor',
-    r'\bSra\.(?=\s)': 'Senhora',
-    r'\bSrta\.(?=\s)': 'Senhorita',
-    r'\bProf\.(?=\s)': 'Professor',
-    r'\bProfa\.(?=\s)': 'Professora',
-    r'\bEng\.(?=\s)': 'Engenheiro',
-    r'\bEngª\.(?=\s)': 'Engenheira',
-    r'\bAdm\.(?=\s)': 'Administrador',
-    r'\bAdv\.(?=\s)': 'Advogado',
-    r'\bExmo\.(?=\s)': 'Excelentíssimo',
-    r'\bExma\.(?=\s)': 'Excelentíssima',
-    r'\bV\.Exa\.(?=\s)': 'Vossa Excelência',
-    r'\bV\.Sa\.(?=\s)': 'Vossa Senhoria',
-    r'\bAv\.(?=\s)': 'Avenida',
-    r'\bR\.(?=\s)': 'Rua',
-    r'\bKm\.(?=\s)': 'Quilômetro',
-    r'\betc\.(?=\s)': 'etcétera',
-    r'\bRef\.(?=\s)': 'Referência',
-    r'\bPag\.(?=\s)': 'Página',
-    r'\bPág\.(?=\s)': 'Página',
-    r'\bPágs\.(?=\s)': 'Páginas',
-    r'\bPags\.(?=\s)': 'Páginas',
-    r'\bFl\.(?=\s)': 'Folha',
-    r'\bPe\.(?=\s)': 'Padre',
-    r'\bFls\.(?=\s)': 'Folhas',
-    r'\bDept\.(?=\s)': 'Departamento',
-    r'\bDepto\.(?=\s)': 'Departamento',
-    r'\bUniv\.(?=\s)': 'Universidade',
-    r'\bInst\.(?=\s)': 'Instituição',
-    r'\bEst\.(?=\s)': 'Estado',
-    r'\bTel\.(?=\s)': 'Telefone',
-    r'\bCEP\.(?=\s)': 'Código de Endereçamento Postal',
-    r'\bCNPJ\.(?=\s)': 'Cadastro Nacional da Pessoa Jurídica',
-    r'\bCPF\.(?=\s)': 'Cadastro de Pessoas Físicas',
-    r'\bEUA\.(?=\s)': 'Estados Unidos da América',
-    r'\bEd\.(?=\s)': 'Edição',
-    r'\bLtda\.(?=\s)': 'Limitada'
-}
-    for abrev, extensao in abreviacoes.items():
-        texto = re.sub(abrev, extensao, texto)
-    return texto
-
-def melhorar_texto_corrigido(texto):
-    texto = texto.replace('\f', '\n\n')  # Remove form feeds
-    texto = remover_numeracao_avulsa(texto)
-    
-    # Remover quebras de linha excessivas (exceto após pontos finais)
-    texto = re.sub(r'(?<!\n)\n(?!\n|\.\s*)', ' ', texto)  # Remove quebras de linha únicas
-    texto = re.sub(r'\n{3,}', '\n\n', texto)  # Limita múltiplas quebras para no máximo duas
-    
-    # Garantir quebras de linha apenas após pontos finais
-    texto = re.sub(r'\.\s+', '.\n\n', texto)
-    
-    # Funções auxiliares mantidas conforme original
-    def remover_num_paginas_rodapes(texto):
-        return re.sub(r'\n?\s*\d+\s+cda_pr_.*?\.indd\s+\d+\s+\d+/\d+/\d+\s+\d+:\d+\s+[APM]{2}', '', texto)
-
-    def corrigir_hifenizacao(texto):
-        return re.sub(r'(\w+)-\s*\n\s*(\w+)', r'\1\2', texto)
-
-    def remover_infos_bibliograficas_rodape(texto):
-        return re.sub(r'^\s*(cda_pr_.*?\.indd.*?)$', '', texto, flags=re.MULTILINE)
-
-    def converter_capitulos_para_extenso_simples(texto):
-        substituicoes = {
-            'CAPÍTULO I': 'CAPÍTULO UM',
-            'CAPÍTULO II': 'CAPÍTULO DOIS',
-            'CAPÍTULO III': 'CAPÍTULO TRÊS',
-            'CAPÍTULO IV': 'CAPÍTULO QUATRO',
-            'CAPÍTULO V': 'CAPÍTULO CINCO',
-            'CAPÍTULO VI': 'CAPÍTULO SEIS',
-            'CAPÍTULO VII': 'CAPÍTULO SETE',
-            'CAPÍTULO VIII': 'CAPÍTULO OITO',
-            'CAPÍTULO IX': 'CAPÍTULO NOVE',
-            'CAPÍTULO X': 'CAPÍTULO DEZ',
-        }
-        for original, novo in substituicoes.items():
-            texto = texto.replace(original, novo)
-        return texto
-
-    # Aplicar as funções auxiliares
-    texto = remover_num_paginas_rodapes(texto)
-    texto = corrigir_hifenizacao(texto)
-    texto = remover_infos_bibliograficas_rodape(texto)
-    texto = converter_capitulos_para_extenso_simples(texto)
-    
-    # Garantir que cada parágrafo termine com pontuação
-    paragrafos = texto.split('\n\n')
-    paragrafos_corrigidos = []
-    for p in paragrafos:
-        p = p.strip()
-        if p and not re.search(r'[.!?…]$', p):
-            p += '.'
-        paragrafos_corrigidos.append(p)
-    texto = '\n\n'.join(paragrafos_corrigidos)
-    
-    return texto
-
-    def pontuar_finais_de_paragrafo(texto):
-        paragrafos = texto.split('\n\n')
-        paragrafos_corrigidos = []
-        for p in paragrafos:
-            p = p.strip()
-            if p and not re.search(r'[.!?…]$', p):
-                p += '.'
-            paragrafos_corrigidos.append(p)
-        return '\n\n'.join(paragrafos_corrigidos)
-
-    texto = remover_num_paginas_rodapes(texto)
-    texto = corrigir_hifenizacao(texto)
-    texto = remover_infos_bibliograficas_rodape(texto)
-    texto = converter_capitulos_para_extenso_simples(texto)
-    texto = pontuar_finais_de_paragrafo(texto)
-    texto = expandir_abreviacoes(texto)
-    return texto
-
-
-def verificar_e_corrigir_arquivo(caminho_txt: str) -> str:
-    """
-    Verifica se o arquivo TXT já foi processado (contém o sufixo '_formatado').
-    Caso não, lê o arquivo, o processa e o salva com o sufixo, retornando o novo caminho.
-    """
-    base, ext = os.path.splitext(caminho_txt)
-    if base.endswith("_formatado"):
-        return caminho_txt
-    try:
-        with open(caminho_txt, 'r', encoding='utf-8') as f:
-            conteudo = f.read()
-    except Exception as e:
-        print(f"❌ Erro ao ler o arquivo TXT: {e}")
-        return caminho_txt
-    conteudo_corrigido = melhorar_texto_corrigido(conteudo)
-    novo_caminho = base + "_formatado" + ext
-    try:
-        with open(novo_caminho, 'w', encoding='utf-8') as f:
-            f.write(conteudo_corrigido)
-        print(f"✅ Arquivo corrigido e salvo em: {novo_caminho}")
-    except Exception as e:
-        print(f"❌ Erro ao salvar o arquivo corrigido: {e}")
-        return caminho_txt
-    return novo_caminho
-
-# ================== FUNÇÕES DE MELHORIA DE ÁUDIO ==================
-
-def obter_duracao_ffprobe(caminho_arquivo):
-    """Obtém a duração de um arquivo de mídia usando ffprobe."""
-    comando = [
-        FFPROBE_BIN,
-        '-v', 'error',
-        '-show_entries', 'format=duration',
-        '-of', 'default=noprint_wrappers=1:nokey=1',
-        caminho_arquivo
-    ]
-    resultado = subprocess.run(comando, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-    return float(resultado.stdout.strip())
-
-def acelerar_audio(input_path, output_path, velocidade):
-    """Acelera um arquivo de áudio usando o filtro atempo do FFmpeg."""
-    comando = [
-        FFMPEG_BIN,
-        '-y',
-        '-i', input_path,
-        '-filter:a', f"atempo={velocidade}",
-        '-vn',
-        output_path
-    ]
-    subprocess.run(comando, check=True)
-
-def criar_video_com_audio(audio_path, video_path, duracao, resolucao):
-    """
-    Cria um vídeo com tela preta a partir de um MP3,
-    usando a resolução 'resolucao' e buffers ampliados para evitar ENOSPC.
-    """
-    comando = [
-        FFMPEG_BIN,
-        '-y',
-        '-threads', '0',
-
-        # Vídeo preto
-        '-f', 'lavfi',
-        '-i', f"color=c=black:s={resolucao}:d={int(duracao)}",
-
-        # Aumenta tamanho da fila de buffer de entrada de áudio
-        '-thread_queue_size', '512',
-        '-i', audio_path,
-
-        '-shortest',
-
-        # Aumenta fila interna de muxing
-        '-max_muxing_queue_size', '1024',
-
-        # Codecs
-        '-c:v', 'libx264', '-preset', 'ultrafast', '-tune', 'zerolatency',
-        '-c:a', 'aac', '-b:a', '128k',
-        '-pix_fmt', 'yuv420p',
-
-        video_path
-    ]
-    subprocess.run(comando, check=True)
-
-def dividir_em_partes(input_path, duracao_total, duracao_maxima, nome_base_saida, extensao):
-    """Divide um arquivo de mídia em partes menores."""
-    # Verifica se precisa dividir
-    if duracao_total <= duracao_maxima:
-        print(f"    O arquivo tem {duracao_total/3600:.2f} horas e não precisa ser dividido.")
-        return
-    
-    print(f"\n    O arquivo tem {duracao_total/3600:.2f} horas e será dividido em partes de até {duracao_maxima/3600:.0f} horas.")
-    
-    partes = ceil(duracao_total / duracao_maxima)
-    for i in range(partes):
-        if CANCELAR_PROCESSAMENTO:
-            print("    Divisão cancelada pelo usuário.")
-            return
-            
-        inicio = i * duracao_maxima
-        duracao = min(duracao_maxima, duracao_total - inicio)
-        output_path = f"{nome_base_saida}_parte{i+1}{extensao}"
-
-        print(f"    Criando parte {i+1}/{partes} ({duracao/3600:.2f}h)...")
-        
-        comando = [
-            FFMPEG_BIN,
-            '-y',
-            '-i', input_path,
-            '-ss', str(inicio),
-            '-t', str(duracao),
-            '-c', 'copy',
-            output_path
-        ]
-        try:
-            subprocess.run(comando, check=True)
-            print(f"    Parte {i+1} criada: {output_path}")
-        except subprocess.CalledProcessError as e:
-            print(f"    ❌ Erro ao criar parte {i+1}: {e}")
-            continue
-
-async def menu_dividir_video():
-    """Menu para dividir vídeos MP4 em partes menores"""
-    await exibir_banner()
-    print("\n✂️ DIVIDIR VÍDEO MP4")
-    
-    DOWNLOADS_DIR = "/storage/emulated/0/Download"
-    MAX_DURATION_HOURS = 12
-    
-    if not os.path.exists(DOWNLOADS_DIR):
-        print("\n❌ Pasta Download não encontrada!")
-        print("Certifique-se de que o Termux tem permissão para acessar o armazenamento.")
-        print("Execute no Termux: termux-setup-storage")
-        await aioconsole.ainput("\nPressione Enter para continuar...")
-        return
-    
+async def main_loop():
+    global CANCELAR_PROCESSAMENTO; detectar_sistema(); verificar_dependencias_essenciais()
+    if sys.platform == 'win32' and sys.version_info >= (3,8) : pass
+    opcoes_principais = {
+        '1': "🚀 CONVERTER TEXTO PARA ÁUDIO (TTS)", '2': "🎙️ TESTAR VOZES TTS",
+        '3': "⚡ MUDAR VELOCIDADE MP3 E GERAR MP4", '4': "🎞️ DIVIDIR VÍDEO LONGO",
+        '5': "🎬 CONVERTER MP3 PARA MP4 (Tela Preta)", '6': "🔄 ATUALIZAR SCRIPT",
+        '7': "❓ AJUDA", '0': "🚪 SAIR"
+    }
     while True:
-        limpar_tela()
-        print("=== DIVISOR DE VÍDEOS MP4 ===")
-        print("\nArquivos MP4 encontrados na pasta Download:\n")
-        
-        files = listar_videos_mp4(DOWNLOADS_DIR)
-        
-        if not files:
-            print("Nenhum arquivo MP4 encontrado.")
-            print("\nPor favor, coloque os vídeos na pasta /storage/emulated/0/Download")
-            await aioconsole.ainput("\nPressione Enter para sair...")
-            return
-        
-        for i, file in enumerate(files, 1):
-            print(f"{i}. {file}")
-        
-        print("\n0. Voltar")
-        
+        CANCELAR_PROCESSAMENTO = False
         try:
-            choice = (await aioconsole.ainput("\nSelecione o arquivo pelo número: ")).strip()
-            
-            if choice == '0':
-                return
-                
-            if not choice.isdigit() or int(choice) < 1 or int(choice) > len(files):
-                print("\nOpção inválida!")
-                await asyncio.sleep(1)
-                continue
-                
-            selected_file = files[int(choice)-1]
-            file_path = os.path.join(DOWNLOADS_DIR, selected_file)
-            
-            # Obter duração do vídeo
-            cmd = f"ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 '{file_path}'"
-            try:
-                duration = float(subprocess.check_output(cmd, shell=True).decode().strip())
-                hours = int(duration // 3600)
-                minutes = int((duration % 3600) // 60)
-                seconds = int(duration % 60)
-                
-                print(f"\nArquivo selecionado: {selected_file}")
-                print(f"Duração: {hours}h {minutes}m {seconds}s")
-                
-                confirm = (await aioconsole.ainput("\nDeseja dividir este vídeo? (s/n): ")).lower()
-                if confirm != 's':
-                    continue
-                    
-                # Criar pasta de saída
-                filename = os.path.splitext(selected_file)[0]
-                output_dir = os.path.join(DOWNLOADS_DIR, f"{filename}_partes")
-                os.makedirs(output_dir, exist_ok=True)
-                
-                max_duration = MAX_DURATION_HOURS * 3600
-                
-                if duration <= max_duration:
-                    print("\nO vídeo não precisa ser dividido (duração menor que 12h).")
-                    await aioconsole.ainput("\nPressione Enter...")
-                    continue
-                
-                num_parts = int(duration // max_duration) + 1
-                print(f"\nDividindo vídeo de {duration/3600:.2f} horas em {num_parts} partes...")
-                
-                for i in range(num_parts):
-                    start_time = i * max_duration
-                    end_time = min((i + 1) * max_duration, duration)
-                    output_path = os.path.join(output_dir, f"{filename}_part{i+1}.mp4")
-                    
-                    print(f"\nProcessando parte {i+1}/{num_parts}...")
-                    
-                    # Comando FFmpeg para cortar o vídeo
-                    cmd = (
-                        f"ffmpeg -i '{file_path}' -ss {start_time} -to {end_time} "
-                        f"-c:v copy -c:a copy '{output_path}' -y"
-                    )
-                    
-                    # Executar e mostrar progresso
-                    process = subprocess.Popen(cmd, shell=True, stderr=subprocess.PIPE)
-                    
-                    # Exibir progresso
-                    while True:
-                        output = process.stderr.readline().decode()
-                        if output == '' and process.poll() is not None:
-                            break
-                        if 'time=' in output:
-                            print(output.split('time=')[1].split(' ')[0], end='\r')
-                    
-                    if process.returncode != 0:
-                        print("\nErro durante a divisão!")
-                        break
-                        
-                    print(f"\nParte {i+1} salva: {output_path}")
-                
-                print("\nDivisão concluída com sucesso!")
-                await aioconsole.ainput("\nPressione Enter para continuar...")
-                
-            except Exception as e:
-                print(f"\nErro ao obter duração do vídeo: {e}")
-                await aioconsole.ainput("\nPressione Enter para continuar...")
-                
-        except (ValueError, IndexError):
-            print("\nSeleção inválida!")
-            await asyncio.sleep(1)
-        except KeyboardInterrupt:
-            print("\nOperação cancelada.")
-            return
-
-async def menu_melhorar_audio():
-    """Menu para melhorar arquivos de áudio/vídeo existentes."""
-    await exibir_banner()
-    print("\n⚡ MELHORAR ÁUDIO EXISTENTE")
-    
-    sistema = detectar_sistema()
-    if sistema['termux'] or sistema['android']:
-        dir_atual = '/storage/emulated/0/Download'
-    elif sistema['windows']:
-        dir_atual = os.path.join(os.path.expanduser('~'), 'Desktop')
-    else:
-        dir_atual = os.path.join(os.path.expanduser('~'), 'Desktop')
-    
-    while True:
-        print(f"\nDiretório atual: {dir_atual}")
-        print("\nArquivos de áudio/vídeo disponíveis:")
-        arquivos = listar_arquivos(dir_atual, ['.mp3', '.wav', '.m4a', '.mp4'])
-        
-        if not arquivos:
-            print("\n⚠️ Nenhum arquivo de áudio/vídeo encontrado neste diretório")
-        else:
-            for i, arquivo in enumerate(arquivos, 1):
-                print(f"{i}. {arquivo}")
-        
-        print("\nOpções:")
-        print("D. Mudar diretório")
-        print("M. Digitar caminho manualmente")
-        print("V. Voltar ao menu principal")
-        
-        escolha = (await aioconsole.ainput("\nEscolha uma opção: ")).strip().upper()
-        
-        if escolha == 'V':
-            return
-        elif escolha == 'D':
-            novo_dir = (await aioconsole.ainput("\nDigite o caminho do novo diretório: ")).strip()
-            if os.path.isdir(novo_dir):
-                dir_atual = novo_dir
-            else:
-                print("\n❌ Diretório inválido")
-                await asyncio.sleep(1)
-        elif escolha == 'M':
-            caminho = (await aioconsole.ainput("\nDigite o caminho completo do arquivo: ")).strip()
-            if not os.path.exists(caminho):
-                print(f"\n❌ Arquivo não encontrado: {caminho}")
-                await asyncio.sleep(1)
-                continue
-            ext = os.path.splitext(caminho)[1].lower()
-            if ext not in ['.mp3', '.wav', '.m4a', '.mp4']:
-                print("\n❌ Formato não suportado. Use MP3, WAV, M4A ou MP4.")
-                await asyncio.sleep(1)
-                continue
-            await processar_melhorar_audio(caminho)
-            return
-        elif escolha.isdigit():
-            indice = int(escolha) - 1
-            if 0 <= indice < len(arquivos):
-                arquivo_selecionado = arquivos[indice]
-                caminho_completo = os.path.join(dir_atual, arquivo_selecionado)
-                await processar_melhorar_audio(caminho_completo)
-                return
-            else:
-                print("\n❌ Opção inválida")
-                await asyncio.sleep(1)
-        else:
-            print("\n❌ Opção inválida")
-            await asyncio.sleep(1)
-
-from pathlib import Path
-
-async def processar_melhorar_audio(arquivo):
-    """Processa a melhoria de um arquivo de áudio/vídeo."""
-    global CANCELAR_PROCESSAMENTO
-    CANCELAR_PROCESSAMENTO = False
-    
-    try:
-        nome_base, ext = os.path.splitext(arquivo)
-        ext = ext.lower()
-
-        if ext not in ['.mp3', '.wav', '.m4a', '.mp4']:
-            print(f"\n❌ Formato não suportado: {ext}")
-            await asyncio.sleep(1)
-            return
-
-        # Configurações de velocidade
-        while True:
-            try:
-                velocidade = float((await aioconsole.ainput("\nInforme a velocidade de reprodução desejada (ex: 1.25, 1.5, 2.0): ")).strip())
-                if not (0.5 <= velocidade <= 2.0):
-                    raise ValueError
-                break
-            except ValueError:
-                print("Valor inválido. Digite um número entre 0.5 e 2.0.")
-
-        # Formato de saída
-        while True:
-            formato = (await aioconsole.ainput("\nEscolha o formato de saída [mp3 para áudio | mp4 para vídeo]: ")).strip().lower()
-            if formato in ["mp3", "mp4"]:
-                break
-            else:
-                print("Formato inválido. Digite 'mp3' ou 'mp4'.")
-
-        # Opção de tamanho personalizado para divisão
-        duracao_maxima = LIMITE_SEGUNDOS
-        personalizado = (await aioconsole.ainput("\nDeseja definir tamanho personalizado para divisão? (padrão: 12 horas) [s/n]: ")).strip().lower()
-        if personalizado == 's':
-            try:
-                horas = float((await aioconsole.ainput("Quantas horas por parte? (max 12): ")).strip())
-                duracao_maxima = min(horas * 3600, LIMITE_SEGUNDOS)
-                print(f"    Partes serão de até {duracao_maxima/3600:.1f} horas")
-            except ValueError:
-                print("    Valor inválido. Usando padrão de 12 horas.")
-                duracao_maxima = LIMITE_SEGUNDOS
-
-        # Normaliza nome de saída
-        nome_saida_base = f"{nome_base}_x{velocidade}".replace(".", "_")
-        nome_saida_base = re.sub(r'_+', '_', nome_saida_base)
-
-        # Cria diretório de saída
-        Path(os.path.dirname(nome_saida_base)).mkdir(parents=True, exist_ok=True)
-
-        temp_audio = f"{nome_saida_base}_temp_audio.mp3"
-
-        print(f"\n[+] Processando: {arquivo}")
-        print(f"    Aumentando velocidade ({velocidade}x)...")
-
-        acelerar_audio(arquivo, temp_audio, velocidade)
-        duracao = obter_duracao_ffprobe(temp_audio)
-        print(f"    Duração após aceleração: {duracao / 3600:.2f} horas")
-
-        extensao_final = ".mp4" if formato == "mp4" else ".mp3"
-
-        if duracao <= duracao_maxima:
-            saida_final = f"{nome_saida_base}{extensao_final}"
-            if formato == "mp4":
-                print("    Gerando vídeo com tela preta...")
-                criar_video_com_audio(temp_audio, saida_final, duracao)
-                os.remove(temp_audio)
-            else:
-                os.rename(temp_audio, saida_final)
-            print(f"\n✅ Arquivo final salvo: {saida_final}")
-        else:
-            print("\n🔀 Dividindo arquivo em partes...")
-            if formato == "mp4":
-                video_completo = f"{nome_saida_base}_video.mp4"
-                criar_video_com_audio(temp_audio, video_completo, duracao)
-                dividir_em_partes(video_completo, duracao, duracao_maxima, nome_saida_base, ".mp4")
-                os.remove(video_completo)
-            else:
-                dividir_em_partes(temp_audio, duracao, duracao_maxima, nome_saida_base, ".mp3")
-            os.remove(temp_audio)
-            print("\n✅ Arquivos divididos com sucesso.")
-
-        await aioconsole.ainput("\nPressione ENTER para continuar...")
-
-    except Exception as e:
-        print(f"\n❌ Erro ao processar arquivo: {str(e)}")
-        await aioconsole.ainput("\nPressione ENTER para continuar...")
-    finally:
-        CANCELAR_PROCESSAMENTO = True
-
-
-def extrair_texto_de_epub(caminho_arquivo: str) -> str:
-    """
-    Extrai o conteúdo textual de um arquivo EPUB, converte para texto plano,
-    aplica formatação e retorna o caminho do arquivo TXT final.
-    """
-    try:
-        print(f"\n📖 Extraindo conteúdo de: {caminho_arquivo}")
-        texto_extraido = ""
-        with zipfile.ZipFile(caminho_arquivo, 'r') as epub:
-            arquivos_html = [
-                f for f in epub.namelist()
-                if f.endswith(('.html', '.xhtml')) and not re.search(r'(toc|nav|cover)', f, re.IGNORECASE)
-            ]
-            arquivos_html.sort()
-
-            for nome_arquivo in arquivos_html:
-                with epub.open(nome_arquivo) as f:
-                    html_bytes = f.read()
-                    encoding_detectado = chardet.detect(html_bytes)['encoding'] or 'utf-8'
-                    try:
-                        html_texto = html_bytes.decode(encoding_detectado, errors='ignore')
-                    except Exception as e:
-                        print(f"❌ Erro ao decodificar {nome_arquivo}: {e}")
-                        continue
-
-                    soup = BeautifulSoup(html_texto, 'html.parser')
-                    for tag in soup(['nav', 'header', 'footer', 'style', 'script']):
-                        tag.decompose()
-
-                    corpo = soup.get_text(separator=' ', strip=True)
-                    if corpo:
-                        texto_convertido = html2text.html2text(corpo)
-                        texto_extraido += texto_convertido + "\n\n"
-
-        if not texto_extraido.strip():
-            print("⚠️ Nenhum conteúdo textual extraído do EPUB.")
-            return ""
-
-        nome_base = os.path.splitext(caminho_arquivo)[0]
-        caminho_txt_extraido = nome_base + "_extraido.txt"
-        with open(caminho_txt_extraido, 'w', encoding='utf-8') as f:
-            f.write(texto_extraido)
-
-        caminho_corrigido = verificar_e_corrigir_arquivo(caminho_txt_extraido)
-        texto_formatado = aplicar_formatacao(ler_arquivo_texto(caminho_corrigido))
-        caminho_formatado = nome_base + "_formatado.txt"
-        with open(caminho_formatado, 'w', encoding='utf-8') as f:
-            f.write(texto_formatado)
-
-        return caminho_formatado  # retorno do extrair_texto_de_epub
-    except Exception as e:
-        print(f"❌ Erro ao extrair texto do EPUB: {e}")
-        return ""
-
-# ================== FUNÇÕES DE LEITURA E PROCESSAMENTO DE ARQUIVOS ==================
-
-def detectar_encoding(caminho_arquivo: str) -> str:
-    """Detecta o encoding de um arquivo de texto."""
-    try:
-        with open(caminho_arquivo, 'rb') as f:
-            resultado = chardet.detect(f.read())
-        encoding_detectado = resultado['encoding']
-        if not encoding_detectado:
-            for enc in ENCODINGS_TENTATIVAS:
-                try:
-                    with open(caminho_arquivo, 'r', encoding=enc) as f:
-                        f.read(100)
-                    return enc
-                except UnicodeDecodeError:
-                    continue
-            return 'utf-8'
-        return encoding_detectado
-    except Exception as e:
-        print(f"\n⚠️ Erro ao detectar encoding: {str(e)}")
-        return 'utf-8'
-
-def ler_arquivo_texto(caminho_arquivo: str) -> str:
-    """Lê o conteúdo de um arquivo de texto com detecção automática de encoding."""
-    encoding = detectar_encoding(caminho_arquivo)
-    try:
-        with open(caminho_arquivo, 'r', encoding=encoding) as f:
-            conteudo = f.read()
-        return conteudo
-    except Exception as e:
-        print(f"\n❌ Erro ao ler arquivo: {str(e)}")
-        return ""
-
-def processar_texto(texto: str) -> str:
-    """Processa o texto para melhorar a qualidade da conversão TTS."""
-    # Remover caracteres não imprimíveis
-    texto = re.sub(r'[\x00-\x1F\x7F-\x9F]', '', texto)
-    texto = texto.encode('utf-8', 'ignore').decode('utf-8')
-
-    texto = re.sub(r'\s+', ' ', texto)
-    abreviacoes = {
-    r'\bDr\.(?=\s)': 'Doutor',
-    r'\bD\.(?=\s)': 'Dona',
-    r'\bDra\.(?=\s)': 'Doutora',
-    r'\bSr\.(?=\s)': 'Senhor',
-    r'\bSra\.(?=\s)': 'Senhora',
-    r'\bSrta\.(?=\s)': 'Senhorita',
-    r'\bProf\.(?=\s)': 'Professor',
-    r'\bProfa\.(?=\s)': 'Professora',
-    r'\bEng\.(?=\s)': 'Engenheiro',
-    r'\bEngª\.(?=\s)': 'Engenheira',
-    r'\bAdm\.(?=\s)': 'Administrador',
-    r'\bAdv\.(?=\s)': 'Advogado',
-    r'\bExmo\.(?=\s)': 'Excelentíssimo',
-    r'\bExma\.(?=\s)': 'Excelentíssima',
-    r'\bV\.Exa\.(?=\s)': 'Vossa Excelência',
-    r'\bV\.Sa\.(?=\s)': 'Vossa Senhoria',
-    r'\bAv\.(?=\s)': 'Avenida',
-    r'\bR\.(?=\s)': 'Rua',
-    r'\bKm\.(?=\s)': 'Quilômetro',
-    r'\betc\.(?=\s)': 'etcétera',
-    r'\bRef\.(?=\s)': 'Referência',
-    r'\bPag\.(?=\s)': 'Página',
-    r'\bPág\.(?=\s)': 'Página',
-    r'\bPágs\.(?=\s)': 'Páginas',
-    r'\bPags\.(?=\s)': 'Páginas',
-    r'\bFl\.(?=\s)': 'Folha',
-    r'\bPe\.(?=\s)': 'Padre',
-    r'\bFls\.(?=\s)': 'Folhas',
-    r'\bDept\.(?=\s)': 'Departamento',
-    r'\bDepto\.(?=\s)': 'Departamento',
-    r'\bUniv\.(?=\s)': 'Universidade',
-    r'\bInst\.(?=\s)': 'Instituição',
-    r'\bEst\.(?=\s)': 'Estado',
-    r'\bTel\.(?=\s)': 'Telefone',
-    r'\bCEP\.(?=\s)': 'Código de Endereçamento Postal',
-    r'\bCNPJ\.(?=\s)': 'Cadastro Nacional da Pessoa Jurídica',
-    r'\bCPF\.(?=\s)': 'Cadastro de Pessoas Físicas',
-    r'\bEUA\.(?=\s)': 'Estados Unidos da América',
-    r'\bEd\.(?=\s)': 'Edição',
-    r'\bLtda\.(?=\s)': 'Limitada'
-}
-
-    for abrev, expansao in abreviacoes.items():
-        texto = re.sub(abrev, expansao, texto)
-
-    def converter_numero(match):
-        num = match.group(0)
-        try:
-            return num2words(int(num), lang='pt_BR')
-        except:
-            return num
-
-    def converter_valor_monetario(match):
-        valor = match.group(1)
-        try:
-            return f"{num2words(int(valor), lang='pt_BR')} reais"
-        except:
-            return f"{valor} reais"
-
-    texto = re.sub(r'\b\d+\b', converter_numero, texto)
-    texto = re.sub(r'R\$\s*(\d+)', converter_valor_monetario, texto)
-    texto = re.sub(r'\b(\d+)\s*-\s*(\d+)\b', lambda m: f"{num2words(int(m.group(1)), lang='pt_BR')} a {num2words(int(m.group(2)), lang='pt_BR')}", texto)
-
-    return texto
-
-def dividir_texto(texto: str) -> list:
-    """
-    Divide o texto em partes menores para processamento, respeitando os pontos finais.
-    """
-    partes = []
-    start = 0
-    while start < len(texto):
-        next_period = texto.find('.', start)
-        if next_period == -1:
-            partes.append(texto[start:].strip())
-            break
-        end = next_period + 1
-        partes.append(texto[start:end].strip())
-        start = end
-    return [p for p in partes if p]
-
-async def converter_texto_para_audio(texto: str, voz: str, caminho_saida: str) -> bool:
-    """Converte texto para áudio usando Edge TTS."""
-    tentativas = 0
-    while tentativas < MAX_TENTATIVAS:
-        try:
-            if not texto.strip():
-                print("⚠️ Texto vazio detectado")
-                return False
-                
-            communicate = edge_tts.Communicate(texto, voz)
-            await communicate.save(caminho_saida)
-            
-            # Verifica se o arquivo foi criado e tem tamanho mínimo
-            if os.path.exists(caminho_saida) and os.path.getsize(caminho_saida) > 1024:
-                return True
-            else:
-                print("⚠️ Arquivo de áudio vazio ou muito pequeno")
-                if os.path.exists(caminho_saida):
-                    os.remove(caminho_saida)
-                return False
-        except Exception as e:
-            tentativas += 1
-            print(f"\n❌ Erro na conversão (tentativa {tentativas}/{MAX_TENTATIVAS}): {str(e)}")
-            if os.path.exists(caminho_saida):
-                os.remove(caminho_saida)
-            if tentativas < MAX_TENTATIVAS:
-                await asyncio.sleep(2)  # Espera antes de tentar novamente
-    return False
-
-# ================== FUNÇÕES DE SELEÇÃO E CONVERSÃO DE ARQUIVOS ==================
-
-async def selecionar_arquivo() -> str:
-    """
-    Interface aprimorada para seleção de arquivo com navegação por diretórios.
-    Se o usuário selecionar um PDF, ele é convertido para TXT e o arquivo gerado é corrigido.
-    Se for um arquivo TXT e o nome não contiver '_formatado', o arquivo é automaticamente corrigido.
-    """
-    sistema = detectar_sistema()
-    if sistema['termux'] or sistema['android']:
-        dir_atual = '/storage/emulated/0/Download'
-    elif sistema['windows']:
-        dir_atual = os.path.join(os.path.expanduser('~'), 'Desktop')
-    else:
-        dir_atual = os.path.join(os.path.expanduser('~'), 'Desktop')
-    while True:
-        await exibir_banner()
-        print("\n📂 SELEÇÃO DE ARQUIVO")
-        print(f"\nDiretório atual: {dir_atual}")
-        print("\nArquivos disponíveis:")
-        arquivos = listar_arquivos(dir_atual, ['.txt', '.pdf', '.epub'])
-        if not arquivos:
-            print("\n⚠️ Nenhum arquivo TXT ou PDF encontrado neste diretório")
-        else:
-            for i, arquivo in enumerate(arquivos, 1):
-                print(f"{i}. {arquivo}")
-        print("\nOpções:")
-        print("D. Mudar diretório")
-        print("M. Digitar caminho manualmente")
-        print("V. Voltar ao menu principal")
-        try:
-            escolha = (await aioconsole.ainput("\nEscolha uma opção: ")).strip().upper()
-        except asyncio.TimeoutError:
-            return ''
-        
-        if escolha == 'V':
-            return ''
-        elif escolha == 'D':
-            novo_dir = (await aioconsole.ainput("\nDigite o caminho do novo diretório: ")).strip()
-            if os.path.isdir(novo_dir):
-                dir_atual = novo_dir
-            else:
-                print("\n❌ Diretório inválido")
-                await asyncio.sleep(1)
-        elif escolha == 'M':
-            caminho = (await aioconsole.ainput("\nDigite o caminho completo do arquivo: ")).strip()
-            if not os.path.exists(caminho):
-                print(f"\n❌ Arquivo não encontrado: {caminho}")
-                await asyncio.sleep(1)
-                continue
-            ext = os.path.splitext(caminho)[1].lower()
-            if ext == '.pdf':
-                caminho_txt = os.path.splitext(caminho)[0] + '.txt'
-                if not converter_pdf(caminho, caminho_txt):
-                    print("\n⚠️ Falha na conversão do PDF. Tente outro arquivo.")
-                    await asyncio.sleep(1)
-                    continue
-                # Após converter, verifica se o TXT já foi corrigido
-                try:
-                    with open(caminho_txt, 'r', encoding='utf-8') as f:
-                        texto_original = f.read()
-                    texto_formatado = aplicar_formatacao(texto_original)
-                    caminho_txt = os.path.splitext(caminho_txt)[0] + '_formatado.txt'
-                    with open(caminho_txt, 'w', encoding='utf-8') as f:
-                        f.write(texto_formatado)
-                    print(f'✅ Formatação aplicada e salva em: {caminho_txt}')
-                except Exception as e:
-                    print(f'❌ Erro ao aplicar formatação: {e}')
-                caminho_txt = verificar_e_corrigir_arquivo(caminho_txt)
-                editar = (await aioconsole.ainput("\nDeseja editar o arquivo TXT gerado? (s/n): ")).strip().lower()
-                if editar == 's':
-                    if sistema['android']:
-                        print("\nO arquivo TXT corrigido foi salvo no diretório padrão (normalmente Download).")
-                        print("Após editá-lo, reinicie a conversão selecionando-o neste script pela opção 1 do menu inicial.")
-                        await aioconsole.ainput("\nPressione ENTER para retornar ao menu principal...")
-                        return ''
-                    else:
-                        if sistema['windows']:
-                            os.startfile(caminho_txt)
-                        elif sistema['macos']:
-                            subprocess.Popen(["open", caminho_txt])
-                        else:
-                            subprocess.Popen(["xdg-open", caminho_txt])
-                        await aioconsole.ainput("\nEdite o arquivo, salve as alterações e pressione ENTER para continuar...")
-                return caminho_txt
-            elif ext == '.txt':
-                # Se o arquivo TXT não contém o sufixo _formatado, corrige-o automaticamente
-                if not os.path.basename(caminho).lower().endswith("_formatado.txt"):
-                    caminho = verificar_e_corrigir_arquivo(caminho)
-                    try:
-                        with open(caminho, 'r', encoding='utf-8') as f:
-                            texto_original = f.read()
-                        texto_formatado = aplicar_formatacao(texto_original)
-                        caminho_formatado = os.path.splitext(caminho)[0] + '_formatado.txt'
-                        with open(caminho_formatado, 'w', encoding='utf-8') as f:
-                            f.write(texto_formatado)
-                        print(f'✅ Formatação aplicada ao TXT e salva em: {caminho_formatado}')
-                        caminho = caminho_formatado
-                    except Exception as e:
-                        print(f'❌ Erro ao aplicar formatação ao TXT: {e}')
-                return caminho
-            else:
-                print(f"\n❌ Formato não suportado: {ext}")
-                print("💡 Apenas arquivos .txt, .pdf e .epub são suportados")
-                await asyncio.sleep(1)
-        elif escolha.isdigit():
-            indice = int(escolha) - 1
-            if 0 <= indice < len(arquivos):
-                arquivo_selecionado = arquivos[indice]
-                caminho_completo = os.path.join(dir_atual, arquivo_selecionado)
-                ext = os.path.splitext(arquivo_selecionado)[1].lower()
-                if ext == '.pdf':
-                    caminho_txt = os.path.splitext(caminho_completo)[0] + '.txt'
-                    if not converter_pdf(caminho_completo, caminho_txt):
-                        print("\n⚠️ Falha na conversão do PDF. Tente outro arquivo.")
-                        await asyncio.sleep(1)
-                        continue
-                    # Corrige o TXT gerado, se necessário
-                    caminho_txt = verificar_e_corrigir_arquivo(caminho_txt)
-                    editar = (await aioconsole.ainput("\nDeseja editar o arquivo TXT gerado? (s/n): ")).strip().lower()
-                    if editar == 's':
-                        if sistema['android']:
-                            print("\nO arquivo TXT corrigido foi salvo no diretório padrão (normalmente Download).")
-                            print("Após editá-lo, reinicie a conversão selecionando-o neste script pela opção 1 do menu inicial.")
-                            await aioconsole.ainput("\nPressione ENTER para retornar ao menu principal...")
-                            return ''
-                        else:
-                            if sistema['windows']:
-                                os.startfile(caminho_txt)
-                            elif sistema['macos']:
-                                subprocess.Popen(["open", caminho_txt])
-                            else:
-                                subprocess.Popen(["xdg-open", caminho_txt])
-                            await aioconsole.ainput("\nEdite o arquivo, salve as alterações e pressione ENTER para continuar...")
-                    return caminho_txt
-                elif ext == '.txt':
-                    if not os.path.basename(caminho_completo).lower().endswith("_formatado.txt"):
-                        caminho_completo = verificar_e_corrigir_arquivo(caminho_completo)
-                    return caminho_completo
-                elif ext == '.epub':
-                    caminho_formatado = extrair_texto_de_epub(caminho_completo)
-                    try:
-                        texto_extraido = ""
-                        with zipfile.ZipFile(caminho_completo, 'r') as epub:
-                            for nome_arquivo in epub.namelist():
-                                if nome_arquivo.endswith('.html') or nome_arquivo.endswith('.xhtml'):
-                                    with epub.open(nome_arquivo) as f:
-                                        html_bytes = f.read()
-                                        try:
-                                            html_texto = html_bytes.decode('utf-8')
-                                        except UnicodeDecodeError:
-                                            html_texto = html_bytes.decode('latin-1')
-                                        texto_extraido += html2text.html2text(html_texto) + "\n"
-                        nome_base = os.path.splitext(caminho_completo)[0]
-                        caminho_txt = nome_base + "_extraido.txt"
-                        with open(caminho_txt, 'w', encoding='utf-8') as f:
-                            f.write(texto_extraido)
-
-                        caminho_corrigido = verificar_e_corrigir_arquivo(caminho_txt)
-                        texto_formatado = aplicar_formatacao(ler_arquivo_texto(caminho_corrigido))
-                        caminho_formatado = nome_base + "_formatado.txt"
-                        with open(caminho_formatado, 'w', encoding='utf-8') as f:
-                            f.write(texto_formatado)
-
-                        editar = (await aioconsole.ainput("\nDeseja editar o arquivo TXT gerado? (s/n): ")).strip().lower()
-                        if editar == "s":
-                            if sistema["android"]:
-                                print("\nO arquivo TXT corrigido foi salvo no diretório padrão (normalmente Download).")
-                                print("Após editá-lo, reinicie a conversão selecionando-o novamente.")
-                                await aioconsole.ainput("\nPressione ENTER para continuar...")
-                                return ""
-                            else:
-                                if sistema["windows"]:
-                                    os.startfile(caminho_formatado)
-                                if sistema['windows']:
-                                    os.startfile(caminho_formatado)
-                                elif sistema['macos']:
-                                    subprocess.Popen(["open", caminho_formatado])
-                                else:
-                                    subprocess.Popen(["xdg-open", caminho_formatado])
-                                await aioconsole.ainput("\nPressione ENTER para continuar...")
-                                print("Edite o arquivo, salve e pressione ENTER para continuar...")
-                        return caminho_formatado  # retorno do extrair_texto_de_epub
-                    except Exception as e:
-                        print(f"❌ Erro ao processar EPUB (zip/html): {e}")
-                        await asyncio.sleep(2)
-                        return ''
-                    except Exception as e:
-                        print(f"\n❌ Erro ao processar EPUB: {str(e)}")
-                        await asyncio.sleep(2)
-                        return ''
-
-                else:
-                    return caminho_completo
-            else:
-                print("\n❌ Opção inválida")
-                await asyncio.sleep(1)
-        else:
-            print("\n❌ Opção inválida")
-            await asyncio.sleep(1)
-
-# ================== FUNÇÕES DE CONVERSÃO TTS ==================
-
-async def iniciar_conversao() -> None:
-    """
-    Inicia o processo de conversão de texto para áudio de forma concorrente.
-    O tamanho dos chunks é calculado dinamicamente.
-    """
-    global CANCELAR_PROCESSAMENTO
-    CANCELAR_PROCESSAMENTO = False
-    
-    try:
-        caminho_arquivo = await selecionar_arquivo()
-        if not caminho_arquivo or CANCELAR_PROCESSAMENTO:
-            return
-
-        voz_escolhida = await menu_vozes()
-        if voz_escolhida is None or CANCELAR_PROCESSAMENTO:
-            return
-
-        print("\n📖 Lendo arquivo...")
-        texto = ler_arquivo_texto(caminho_arquivo)
-        if not texto or CANCELAR_PROCESSAMENTO:
-            print("\n❌ Arquivo vazio ou ilegível")
-            await asyncio.sleep(2)
-            return
-
-        print("🔄 Processando texto...")
-        texto_processado = processar_texto(texto)
-        
-        partes = dividir_texto(texto_processado)
-        total_partes = len(partes)
-        print(f"\n📊 Texto dividido em {total_partes} parte(s).")
-        print("Para interromper a conversão a qualquer momento, pressione CTRL + C.\n")
-
-        nome_base = os.path.splitext(os.path.basename(caminho_arquivo))[0]
-        nome_base = limpar_nome_arquivo(nome_base)
-        diretorio_saida = os.path.join(os.path.dirname(caminho_arquivo), f"{nome_base}_audio")
-
-        if not os.path.exists(diretorio_saida):
-            os.makedirs(diretorio_saida)
-
-        temp_files = []
-        start_time = time.time()
-        semaphore = asyncio.Semaphore(5)  # Limite de 5 tarefas simultâneas
-
-        async def processar_chunk(i, parte):
-            async with semaphore:
-                if CANCELAR_PROCESSAMENTO:
-                    return None
-                
-                saida_temp = os.path.join(diretorio_saida, f"{nome_base}_temp_{i:03d}.mp3")
-                temp_files.append(saida_temp)
-                
-                tentativa = 1
-                while tentativa <= MAX_TENTATIVAS:
-                    if CANCELAR_PROCESSAMENTO:
-                        return None
-                    
-                    inicio_chunk = time.time()
-                    sucesso = await converter_texto_para_audio(parte, voz_escolhida, saida_temp)
-                    
-                    if sucesso:
-                        tempo_chunk = time.time() - inicio_chunk
-                        print(f"✅ Parte {i}/{total_partes} | Tentativa {tentativa}/{MAX_TENTATIVAS} | Tempo: {tempo_chunk:.1f}s")
-                        return True
-                    else:
-                        print(f"🔄 Tentativa {tentativa}/{MAX_TENTATIVAS} falhou para parte {i}. Reiniciando...")
-                        tentativa += 1
-                        await asyncio.sleep(2)  # Intervalo entre tentativas
-                
-                print(f"❌ Falha definitiva na parte {i} após {MAX_TENTATIVAS} tentativas")
-                return False
-
-        tasks = [processar_chunk(i+1, p) for i, p in enumerate(partes)]
-        results = await asyncio.gather(*tasks)
-        
-        # Verificar se todas as partes foram convertidas
-        if not all(results):
-            print("\n⚠️ Algumas partes falharam. Não é possível unificar.")
-            return
-        
-        if not CANCELAR_PROCESSAMENTO and any(results):
-            print("\n🔄 Unificando arquivos...")
-            arquivo_final = os.path.join(diretorio_saida, f"{nome_base}.mp3")
-            
-            if unificar_audio(temp_files, arquivo_final):
-                for f in temp_files:
-                    if os.path.exists(f):
-                        os.remove(f)
-                overall_time = time.time() - start_time
-                print(f"\n🎉 Conversão concluída em {overall_time:.1f} s! Arquivo final: {arquivo_final}")
-                
-                # Pergunta se deseja melhorar o áudio
-                melhorar = (await aioconsole.ainput("\nDeseja melhorar o áudio gerado (ajustar velocidade)? (s/n): ")).strip().lower()
-                if melhorar == 's':
-                    await processar_melhorar_audio(arquivo_final)
-            else:
-                print("\n❌ Falha na unificação dos arquivos.")
-
-        await aioconsole.ainput("\nPressione ENTER para continuar...")
-
-    except asyncio.CancelledError:
-        print("\n🚫 Operação cancelada pelo usuário")
-    finally:
-        CANCELAR_PROCESSAMENTO = True
-        if 'temp_files' in locals():
-            for f in temp_files:
-                if os.path.exists(f):
-                    os.remove(f)
-        await asyncio.sleep(1)
-
-async def main() -> None:
-    """Função principal do programa."""
-    verificar_dependencias()
-    
-    # Configura política de event loop para Windows
-    if sys.platform == 'win32':
-        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-    
-    while True:
-        opcao = await menu_principal()
-        if opcao == '1':
-            await iniciar_conversao()
-        elif opcao == '2':
-            while True:
-                voz_escolhida = await menu_vozes()
-                if voz_escolhida is None:
-                    break
-                print(f"\n🎙️ Testando voz: {voz_escolhida}")
-                await testar_voz(voz_escolhida)
-        elif opcao == '3':
-            await menu_melhorar_audio()
-        elif opcao == '4':
-            await menu_dividir_video()
-        elif opcao == '5':
-            await exibir_ajuda()
-        elif opcao == '6':
-            await atualizar_script()
-        elif opcao == '7':
-            await menu_converter_mp3_para_mp4()
-        elif opcao == '8':
-            print("\n👋 Obrigado por usar o Conversor TTS Completo!")
-            sys.exit(0)
-
-asyncio.run(main())
+            escolha = await exibir_banner_e_menu("MENU PRINCIPAL", opcoes_principais)
+            if escolha == 1: await iniciar_conversao_tts()
+            elif escolha == 2: await testar_vozes_tts()
+            elif escolha == 3: await menu_melhorar_audio_video()
+            elif escolha == 4: await menu_dividir_video_existente()
+            elif escolha == 5: await menu_converter_mp3_para_mp4()
+            elif escolha == 6: await atualizar_script()
+            elif escolha == 7: await exibir_ajuda()
+            elif escolha == 0: print("\n👋 Obrigado por usar!"); break
+        except asyncio.CancelledError: print("\n🚫 Operação cancelada. Voltando ao menu..."); CANCELAR_PROCESSAMENTO = True; await asyncio.sleep(0.1)
+        except Exception as e_main:
+            print(f"\n❌ Erro no loop principal: {e_main}"); import traceback; traceback.print_exc()
+            await aioconsole.ainput("Pressione ENTER para tentar continuar...")
 
 if __name__ == "__main__":
+    # Lembre-se de renomear o arquivo se ele se chamar "code.py"
+    if Path(__file__).name == "code.py":
+        print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+        print("!!! ERRO DE NOME DE ARQUIVO: Por favor, renomeie este script para algo    !!!")
+        print("!!! diferente de 'code.py' (ex: 'conversor_tts.py') para evitar conflitos !!!")
+        print("!!! com módulos internos do Python.                                        !!!")
+        print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+        sys.exit(1)
     try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        print("\n\n⚠️ Programa interrompido pelo usuário.")
-    except Exception as e:
-        print(f"\n❌ Erro inesperado: {str(e)}")
-
-
-# === Funções para EPUB adicionadas ===
-from bs4 import BeautifulSoup
-
-def convert_epub_to_txt(epub_path, output_path=None):
-    """
-    Converte um arquivo ePub para TXT
-    """
-    try:
-        # Verifica se o arquivo existe
-        if not os.path.exists(epub_path):
-            print(f"Erro: Arquivo '{epub_path}' não encontrado.")
-            return False
-        
-        # Define o nome do arquivo de saída
-        if output_path is None:
-            output_path = os.path.splitext(epub_path)[0] + ".txt"
-        
-        # Extrai o conteúdo do ePub (que é um arquivo zip)
-        with zipfile.ZipFile(epub_path, 'r') as epub:
-            # Encontra todos os arquivos HTML/XHTML no ePub
-            html_files = [f for f in epub.namelist() 
-                         if f.lower().endswith(('.html', '.xhtml', '.htm'))]
-            
-            # Ordena os arquivos para manter a ordem dos capítulos
-            html_files.sort()
-            
-            # Processa cada arquivo HTML
-            full_text = ""
-            for html_file in html_files:
-                with epub.open(html_file) as f:
-                    html_content = f.read().decode('utf-8')
-                    
-                    # Usa BeautifulSoup para limpar o HTML
-                    soup = BeautifulSoup(html_content, 'html.parser')
-                    
-                    # Remove scripts e estilos
-                    for script in soup(["script", "style"]):
-                        script.decompose()
-                    
-                    # Converte HTML para texto usando html2text
-                    h = html2text.HTML2Text()
-                    h.ignore_links = True
-                    h.ignore_images = True
-                    h.ignore_emphasis = True
-                    text = h.handle(str(soup))
-                    
-                    full_text += text + "\n\n"
-        
-        # Salva o texto em um arquivo
-        with open(output_path, 'w', encoding='utf-8') as f:
-            f.write(full_text)
-            
-        print(f"Conversão concluída! Arquivo salvo em: {output_path}")
-        return True
-        
-    except Exception as e:
-        print(f"Erro durante a conversão: {str(e)}")
-        return False
-    
-    epub_path = sys.argv[1]
-    output_path = sys.argv[2] if len(sys.argv) > 2 else None
-    
-    convert_epub_to_txt(epub_path, output_path)
-
-if __name__ == "__main__":
-    asyncio.run(menu_principal())
+        asyncio.run(main_loop())
+    except KeyboardInterrupt: print("\n\n⚠️ Programa interrompido (KeyboardInterrupt).")
+    except Exception as e_global: print(f"\n❌ Erro global: {str(e_global)}"); import traceback; traceback.print_exc()
+    finally: print("🔚 Script finalizado.")
