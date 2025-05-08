@@ -244,35 +244,92 @@ def _remover_metadados_pdf(texto):
     texto = re.sub(r'^\s*[\w\d_-]+\.indd\s+\d+\s+\d{2}/\d{2}/\d{2,4}\s+\d{1,2}:\d{2}(:\d{2})?\s*([AP]M)?\s*$', '', texto, flags=re.MULTILINE)
     return texto
 
-def _expandir_abreviacoes_numeros(texto):
-    for abrev, expansao in ABREVIACOES_EXPANSAO.items():
-        texto = re.sub(abrev, expansao, texto, flags=re.IGNORECASE)
+# Coloque esta definição ANTES da função _expandir_abreviacoes_numeros
+# Mapeia a forma base (sem ponto, case-insensitive) para a expansão
+ABREVIACOES_MAP = {
+    'dr': 'Doutor', 'd': 'Dona', 'dra': 'Doutora',
+    'sr': 'Senhor', 'sra': 'Senhora', 'srta': 'Senhorita',
+    'prof': 'Professor', 'profa': 'Professora',
+    'eng': 'Engenheiro', 'engª': 'Engenheira', # 'engª' é um caso especial
+    'adm': 'Administrador', 'adv': 'Advogado',
+    'exmo': 'Excelentíssimo', 'exma': 'Excelentíssima',
+    'v.exa': 'Vossa Excelência', 'v.sa': 'Vossa Senhoria', # Casos com ponto interno
+    'av': 'Avenida', 'r': 'Rua', 'km': 'Quilômetro',
+    'etc': 'etcétera', 'ref': 'Referência',
+    'pag': 'Página', 'pags': 'Páginas',
+    'fl': 'Folha', 'fls': 'Folhas',
+    'pe': 'Padre',
+    'dept': 'Departamento', 'depto': 'Departamento',
+    'univ': 'Universidade', 'inst': 'Instituição',
+    'est': 'Estado', 'tel': 'Telefone',
+    # CEP, CNPJ, CPF não terminam em ponto geralmente
+    'eua': 'Estados Unidos da América', # Sigla comum
+    'ed': 'Edição', 'ltda': 'Limitada'
+    # Adicione mais conforme necessário
+}
 
+# Pré-processar para busca case-insensitive mais rápida
+ABREVIACOES_MAP_LOWER = {k.lower(): v for k, v in ABREVIACOES_MAP.items()}
+
+# Casos especiais que precisam de tratamento diferente (ex: ponto interno)
+# Estes podem ser deixados nos padrões originais se a nova abordagem não funcionar bem
+CASOS_ESPECIAIS_RE = {
+     r'\bV\.Exa\.(?=\s)': 'Vossa Excelência', # Mantém o padrão original
+     r'\bV\.Sa\.(?=\s)': 'Vossa Senhoria',  # Mantém o padrão original
+     r'\bEngª\.(?=\s)': 'Engenheira' # Trata 'ª' separadamente
+     # Adicionar outros casos complexos aqui se necessário
+}
+
+def _expandir_abreviacoes_numeros(texto: str) -> str:
+    """Expande abreviações comuns (removendo o ponto da abrev.) e converte números."""
+
+    # Primeiro, trata casos especiais com regex mais complexas
+    for abrev_re, expansao in CASOS_ESPECIAIS_RE.items():
+         texto = re.sub(abrev_re, expansao, texto, flags=re.IGNORECASE)
+
+    # Agora, trata as abreviações mais simples terminadas em ponto
+    def replace_abrev_com_ponto(match):
+        abrev_encontrada = match.group(1) # A parte da abreviação antes do ponto
+        # Busca a expansão no dicionário (case-insensitive)
+        expansao = ABREVIACOES_MAP_LOWER.get(abrev_encontrada.lower())
+        if expansao:
+            return expansao # Retorna APENAS a expansão, removendo o ponto original
+        else:
+            return match.group(0) # Se não encontrar (improvável), retorna o match original
+
+    # Cria um padrão regex que busca por qualquer chave do dicionário seguida por um ponto.
+    # Ex: \b(Dr|D|Dra|Sr|Sra|...)\.(?!\.)
+    # Usamos lookahead negativo (?!\.) para NÃO remover o ponto se for seguido por outro (ex: fim de frase..)
+    # Ou, mais simples: sempre remove o ponto da abreviação e deixa a lógica de pontuação final para depois.
+    
+    # Padrão: \b(chave1|chave2|...)\.
+    # Captura a chave (grupo 1) e o ponto literal.
+    chaves_escapadas = [re.escape(k) for k in ABREVIACOES_MAP_LOWER.keys() if '.' not in k and 'ª' not in k] # Ignora chaves já tratadas ou complexas
+    if chaves_escapadas: # Só cria o padrão se houver chaves simples
+        padrao_abrev_simples = r'\b(' + '|'.join(chaves_escapadas) + r')\.'
+        texto = re.sub(padrao_abrev_simples, replace_abrev_com_ponto, texto, flags=re.IGNORECASE)
+
+    # --- Conversão de números cardinais (lógica mantida) ---
     def _converter_numero_match(match):
         num_str = match.group(0)
         try:
-            if re.match(r'^\d{4}$', num_str) and (1900 <= int(num_str) <= 2100):
-                return num_str
-            if len(num_str) > 7 :
-                return num_str
+            if re.match(r'^\d{4}$', num_str) and (1900 <= int(num_str) <= 2100): return num_str
+            if len(num_str) > 7 : return num_str
             return num2words(int(num_str), lang='pt_BR')
-        except Exception:
-            return num_str
-
+        except Exception: return num_str
     texto = re.sub(r'\b\d+\b', _converter_numero_match, texto)
 
+    # --- Conversão de valores monetários (lógica mantida) ---
     def _converter_valor_monetario_match(match):
         valor_inteiro = match.group(1).replace('.', '')
-        try:
-            reais = num2words(int(valor_inteiro), lang='pt_BR')
-            return f"{reais} reais"
-        except Exception:
-            return match.group(0)
+        try: return f"{num2words(int(valor_inteiro), lang='pt_BR')} reais"
+        except Exception: return match.group(0)
     texto = re.sub(r'R\$\s*(\d{1,3}(?:\.\d{3})*),(\d{2})', _converter_valor_monetario_match, texto)
     texto = re.sub(r'R\$\s*(\d+)(?:,00)?', lambda m: f"{num2words(int(m.group(1)), lang='pt_BR')} reais" if m.group(1) else m.group(0) , texto)
-    texto = re.sub(r'\b(\d+)\s*-\s*(\d+)\b',
-                   lambda m: f"{num2words(int(m.group(1)), lang='pt_BR')} a {num2words(int(m.group(2)), lang='pt_BR')}",
-                   texto)
+    
+    # --- Conversão de intervalos numéricos (lógica mantida) ---
+    texto = re.sub(r'\b(\d+)\s*-\s*(\d+)\b', lambda m: f"{num2words(int(m.group(1)), lang='pt_BR')} a {num2words(int(m.group(2)), lang='pt_BR')}", texto)
+    
     return texto
 
 def _converter_ordinais_para_extenso(texto: str) -> str:
@@ -310,105 +367,154 @@ def _converter_ordinais_para_extenso(texto: str) -> str:
 
     return texto
 
+# ================== SET DE ABREVIAÇÕES (Definir ANTES da função) ==================
+# (Mantenha a definição de ABREVIACOES_QUE_NAO_TERMINAM_FRASE e SIGLA_COM_PONTOS_RE como na versão anterior)
+ABREVIACOES_QUE_NAO_TERMINAM_FRASE = set([
+    # ... (lista completa da versão anterior) ...
+    'sr.', 'sra.', 'srta.', 'dr.', 'dra.', 'prof.', 'profa.', 'eng.', 'exmo.', 'exma.', 
+    'pe.', 'rev.', 'ilmo.', 'ilma.', 'gen.', 'cel.', 'maj.', 'cap.', 'ten.', 'sgt.', 
+    'cb.', 'sd.', 'me.', 'ms.', 'msc.', 'esp.', 'av.', 'r.', 'pç.', 'esq.', 'trav.', 
+    'jd.', 'pq.', 'rod.', 'km.', 'apt.', 'ap.', 'bl.', 'cj.', 'cs.', 'ed.', 'nº', 
+    'no.', 'uf.', 'cep.', 'est.', 'mun.', 'dist.', 'zon.', 'reg.', 'kg.', 'cm.', 
+    'mm.', 'lt.', 'ml.', 'mg.', 'seg.', 'min.', 'hr.', 'ltda.', 's.a.', 's/a', 
+    'cnpj.', 'cpf.', 'rg.', 'proc.', 'ref.', 'cod.', 'tel.', 'etc.', 'p.ex.', 'ex.', 
+    'i.e.', 'e.g.', 'vs.', 'cf.', 'op.cit.', 'loc.cit.', 'fl.', 'fls.', 'pag.', 
+    'p.', 'pp.', 'u.s.', 'e.u.a.', 'o.n.u.', 'i.b.m.', 'h.p.', 'obs.', 'att.', 
+    'resp.', 'publ.', 'ed.', 'doutora', 'senhora', 'senhor', 'doutor', 'professor', 
+    'professora', 'general'
+])
+SIGLA_COM_PONTOS_RE = re.compile(r'\b([A-Z]\.\s*)+$')
+# ==============================================================================
+
 def formatar_texto_para_tts(texto_bruto: str) -> str:
     print("⚙️ Aplicando formatações ao texto...")
     texto = texto_bruto
 
-    # 0. Normalizações iniciais e remoção de caracteres indesejados básicos
+    # 0. Normalizações e remoções básicas (mantidas)
+    # ... (código inalterado) ...
     texto = unicodedata.normalize('NFKC', texto)
-    texto = texto.replace('\f', '\n\n')
-    texto = texto.replace('*', '')
+    texto = texto.replace('\f', '\n\n'); texto = texto.replace('*', '')
+    caracteres_para_espaco = ['_', '#', '@']
+    caracteres_para_remover = ['(', ')', '\\', '[', ']'] 
+    for char in caracteres_para_espaco: texto = texto.replace(char, ' ')
+    for char in caracteres_para_remover: texto = texto.replace(char, '')
+    texto = re.sub(r'\{.*?\}', '', texto) 
 
-    # === Substituir _, #, @ por espaço === (mantido)
-    caracteres_para_substituir = ['_', '#', '@']
-    for char in caracteres_para_substituir:
-        texto = texto.replace(char, ' ')
-    
-    # === Remover parênteses ( e ) === (mantido)
-    texto = texto.replace('(', '')
-    texto = texto.replace(')', '')
+    # 1. Pré-limpeza de espaços múltiplos e linhas vazias (mantida)
+    # ... (código inalterado) ...
+    texto = re.sub(r'[ \t]+', ' ', texto)
+    texto = "\n".join([linha.strip() for linha in texto.splitlines() if linha.strip()]) 
 
-    # === NOVA ETAPA: Remover barra invertida \ ===
-    texto = texto.replace('\\', '') 
-    # ===========================================
-
-    # === Remover QUALQUER coisa dentro de {} === (mantido)
-    texto = re.sub(r'\{.*?\}', '', texto)
-    # =========================================================
-
-    # 1. Pré-limpeza de caracteres estranhos e espaços excessivos (mantido)
-    # ... (resto do código da função inalterado) ...
-    texto = re.sub(r'[ \t]+', ' ', texto) 
-    texto = "\n".join([linha.strip() for linha in texto.splitlines()])
-    texto = re.sub(r'(?<=\w)\s*\](?=\s|$|\n)', '', texto) 
-    texto = re.sub(r'\[\s*(?=\w)', '', texto)            
-
-    # 2. TRATAMENTO DE QUEBRAS DE LINHA DENTRO DE PARÁGRAFOS (mantido)
+    # 2. JUNTAR LINHAS DENTRO DE PARÁGRAFOS INTENCIONAIS (mantida)
+    # ... (código inalterado da versão anterior) ...
     paragrafos_originais = texto.split('\n\n')
     paragrafos_processados = []
     for paragrafo_bruto in paragrafos_originais:
-        if not paragrafo_bruto.strip(): continue
+        paragrafo_bruto = paragrafo_bruto.strip()
+        if not paragrafo_bruto: continue
         linhas_do_paragrafo = paragrafo_bruto.split('\n')
-        paragrafo_corrido = ""
+        paragrafo_corrido_linhas = []
+        buffer_linha_atual = ""
         for i, linha in enumerate(linhas_do_paragrafo):
-            linha_strip = linha.strip()
+            linha_strip = linha.strip();
             if not linha_strip: continue
-            if not paragrafo_corrido: paragrafo_corrido = linha_strip
+            juntar_com_anterior = False
+            if buffer_linha_atual:
+                ultima_palavra_buffer = buffer_linha_atual.split()[-1].lower() if buffer_linha_atual else ""
+                termina_abreviacao = ultima_palavra_buffer in ABREVIACOES_QUE_NAO_TERMINAM_FRASE
+                termina_sigla_ponto = re.search(r'\b[A-Z]\.$', buffer_linha_atual) is not None
+                termina_pontuacao_forte = re.search(r'[.!?…]$', buffer_linha_atual)
+                nao_juntar = False
+                if termina_pontuacao_forte and not termina_abreviacao and not termina_sigla_ponto:
+                     if linha_strip and linha_strip[0].isupper(): nao_juntar = True
+                if termina_abreviacao or termina_sigla_ponto: juntar_com_anterior = True
+                elif not nao_juntar and not termina_pontuacao_forte: juntar_com_anterior = True
+                elif buffer_linha_atual.lower() in ['doutora', 'senhora', 'senhor', 'doutor']: juntar_com_anterior = True
+            if juntar_com_anterior: buffer_linha_atual += " " + linha_strip
             else:
-                if re.search(r'[.!?…]$', paragrafo_corrido) or \
-                   (linha_strip and linha_strip[0].isupper() and len(paragrafo_corrido.split()[-1]) > 2) or \
-                   (len(linha_strip) < 5 and not any(c.isalpha() for c in linha_strip)):
-                    paragrafo_corrido += "\n" + linha_strip
-                else:
-                    paragrafo_corrido += " " + linha_strip
-        paragrafo_corrido = re.sub(r'[ \t]+', ' ', paragrafo_corrido).strip()
-        if paragrafo_corrido: paragrafos_processados.append(paragrafo_corrido)
+                if buffer_linha_atual: paragrafos_processados.append(buffer_linha_atual)
+                buffer_linha_atual = linha_strip
+        if buffer_linha_atual: paragrafos_processados.append(buffer_linha_atual)
     texto = '\n\n'.join(paragrafos_processados)
-
+    
     # 3. Limpeza de espaços e quebras (mantido)
+    # ... (código inalterado) ...
     texto = re.sub(r'[ \t]+', ' ', texto)
-    texto = re.sub(r'\s*\n\s*', '\n', texto)
-    texto = re.sub(r'\n{3,}', '\n\n', texto)
+    texto = re.sub(r'(?<!\n)\n(?!\n)', ' ', texto) 
+    texto = re.sub(r'\n{3,}', '\n\n', texto) 
 
-    # Etapas originais de formatação (mantidas)
+    # 4. Formatações que operam melhor no texto mais estruturado (mantidas)
+    # ... (código inalterado) ...
     texto = _remover_metadados_pdf(texto)
-    texto = _remover_numeros_pagina_isolados(texto)
+    texto = _remover_numeros_pagina_isolados(texto) 
     texto = _corrigir_hifenizacao_quebras(texto) 
     texto = _formatar_numeracao_capitulos(texto)
 
-    # Quebra de parágrafo após pontuação final (mantido)
-    texto = re.sub(r'([.!?…])\s*(?!\n\n|\n?$)', r'\1\n\n', texto)
+    # 5. REINTRODUZIR QUEBRAS DE PARÁGRAFO (\n\n) INTELIGENTEMENTE (mantida)
+    # ... (código inalterado da versão anterior) ...
+    segmentos = re.split(r'([.!?…])\s*', texto)
+    texto_reconstruido = ""; buffer_segmento = "" 
+    for i in range(0, len(segmentos), 2): 
+        parte_texto = segmentos[i]; pontuacao = segmentos[i+1] if i + 1 < len(segmentos) else ""
+        segmento_completo = (parte_texto + pontuacao).strip()
+        if not segmento_completo: continue 
+        ultima_palavra = segmento_completo.split()[-1].lower() if segmento_completo else ""
+        ultima_palavra_sem_ponto = ultima_palavra.rstrip('.!?…') if pontuacao else ultima_palavra
+        termina_abreviacao_conhecida = ultima_palavra in ABREVIACOES_QUE_NAO_TERMINAM_FRASE or \
+                                        ultima_palavra_sem_ponto in ABREVIACOES_QUE_NAO_TERMINAM_FRASE
+        termina_sigla_padrao = SIGLA_COM_PONTOS_RE.search(segmento_completo) is not None
+        nao_quebrar = False
+        if pontuacao == '.': 
+             if termina_abreviacao_conhecida or termina_sigla_padrao: nao_quebrar = True
+        if buffer_segmento: buffer_segmento += " " + segmento_completo 
+        else: buffer_segmento = segmento_completo 
+        if not nao_quebrar: texto_reconstruido += buffer_segmento + "\n\n"; buffer_segmento = "" 
+    if buffer_segmento:
+         texto_reconstruido += buffer_segmento
+         if not re.search(r'[.!?…)]$', buffer_segmento): texto_reconstruido += "."
+         texto_reconstruido += "\n\n" 
+    texto = texto_reconstruido.strip() 
 
-    # Normalização de caixa (mantido)
+    # 6. Formatações Finais (Caixa, Ordinais, Cardinais, etc.)
     texto = _normalizar_caixa_alta_linhas(texto)
+    texto = _converter_ordinais_para_extenso(texto)
+    texto = _expandir_abreviacoes_numeros(texto) # <<< Expansão acontece aqui
 
-    # Conversão de ordinais (mantido)
-    texto = _converter_ordinais_para_extenso(texto) 
+    # === NOVA ETAPA 6.5: Limpeza Pós-Expansão ===
+    # Remove ponto final especificamente após as formas expandidas de tratamentos comuns,
+    # SEGUIDO por um espaço e uma letra maiúscula (indicando nome próprio ou início de frase indevido).
+    formas_expandidas_tratamento = ['Senhor', 'Senhora', 'Doutor', 'Doutora', 'Professor', 'Professora', 'Excelentíssimo', 'Excelentíssima'] # Adicione mais se necessário
+    for forma in formas_expandidas_tratamento:
+        # Padrão: \bFormaExpandida\.\s+([A-Z])
+        # Substitui por: FormaExpandida \1 (mantém a letra maiúscula seguinte)
+        padrao_limpeza = r'\b' + re.escape(forma) + r'\.\s+([A-Z])'
+        texto = re.sub(padrao_limpeza, rf'{forma} \1', texto)
+        # Caso sem espaço após o ponto (menos comum, mas possível)
+        padrao_limpeza_sem_espaco = r'\b' + re.escape(forma) + r'\.([A-Z])'
+        texto = re.sub(padrao_limpeza_sem_espaco, rf'{forma} \1', texto)
+        
+    # Limpa também casos como "U. S. Robôs" -> "U. S. Robôs" (já deve ser tratado antes, mas por garantia)
+    # Remove ponto após sigla de letra única se seguido por espaço e letra maiúscula
+    texto = re.sub(r'\b([A-Z])\.\s+([A-Z])', r'\1. \2', texto) # Ex: U. S. -> U. S. (garante espaço)
+    texto = re.sub(r'\b([A-Z])\.\s+([A-Z][a-z])', r'\1. \2', texto) # Ex: U. S. Robos -> U. S. Robos
 
-    # Expansões de abreviações e números cardinais (mantido)
-    texto = _expandir_abreviacoes_numeros(texto) 
 
-    # 5. Pós-processamento final de parágrafos (mantido)
+    # =============================================
+
+    # 7. Limpeza Final de Parágrafos Vazios e Espaços (mantida)
+    # ... (código inalterado) ...
     paragrafos_finais = texto.split('\n\n')
     paragrafos_formatados_final = []
     for p in paragrafos_finais:
         p_strip = p.strip()
-        if not p_strip: continue
-        p_strip = "\n".join([ln for ln in p_strip.split('\n') if any(c.isalpha() or c.isdigit() for c in ln) or len(ln.strip()) > 2])
-        if not p_strip: continue
-        ultima_linha = p_strip.split('\n')[-1].strip()
-        if not re.search(r'[.!?…)]$', ultima_linha) and \
+        if not p_strip: continue 
+        if not re.search(r'[.!?…)]$', p_strip) and \
            not re.match(r'^\s*CAP[ÍI]TULO\s+[\w\d]+\.?\s*$', p_strip.split('\n')[0].strip(), re.IGNORECASE):
-            linhas_p = p_strip.split('\n')
-            linhas_p[-1] = linhas_p[-1].strip() + '.'
-            p_strip = "\n".join(linhas_p)
+            p_strip += '.'
         paragrafos_formatados_final.append(p_strip)
     texto = '\n\n'.join(paragrafos_formatados_final)
-
-    # Última limpeza (mantido)
     texto = re.sub(r'[ \t]+', ' ', texto).strip()
-    texto = re.sub(r'\n{3,}', '\n\n', texto)
-    texto = re.sub(r'(\s*\n){2,}\s*', '\n\n', texto)
+    texto = re.sub(r'\n{2,}', '\n\n', texto)
 
     print("✅ Formatação de texto concluída.")
     return texto.strip()
