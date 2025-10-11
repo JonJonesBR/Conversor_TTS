@@ -908,102 +908,52 @@ def _parse_ffmpeg_time(time_str: str) -> float:
         pass # Ignora erros de parsing
     return 0.0
 
-def _executar_ffmpeg_comando(comando_ffmpeg: list, descricao_acao: str, total_duration: float = 0.0):
-    """Executa um comando FFmpeg, lida com erros e mostra progresso ou indicador de atividade."""
-    global CANCELAR_PROCESSAMENTO
-    if CANCELAR_PROCESSAMENTO:
-        print(f"🚫 {descricao_acao} cancelada.")
-        return False
+import subprocess
+import time
 
+def _executar_ffmpeg_comando(comando, descricao="processamento FFmpeg"):
+    """
+    Executa um comando FFmpeg exibindo progresso em tempo real sem travar.
+    Compatível com Termux / Android.
+    """
     try:
-        print(f"⚙️ Executando: {descricao_acao}...") # Mensagem inicial
+        print(f"⚙️ Executando: {descricao}...")
+        process = subprocess.Popen(
+            comando,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            universal_newlines=True,
+            bufsize=1
+        )
 
-        startupinfo = None
-        if platform.system() == "Windows":
-            startupinfo = subprocess.STARTUPINFO()
-            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-            startupinfo.wShowWindow = subprocess.SW_HIDE
+        # Mostra progresso sem travar
+        while True:
+            retcode = process.poll()
+            stderr_line = process.stderr.readline()
 
-        process = subprocess.Popen(comando_ffmpeg, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                   universal_newlines=True, encoding='utf-8', errors='ignore',
-                                   startupinfo=startupinfo)
+            # Sai do loop se o processo terminou
+            if retcode is not None:
+                break
 
-        stderr_output = ""
-        last_progress_time = time.monotonic()
-        pbar_ffmpeg = None
-        activity_indicator_time = time.monotonic() # Para o indicador de atividade simples
-
-        # Loop para ler stderr (para progresso) ou apenas esperar se não houver progresso
-        while process.poll() is None: # Enquanto o processo estiver rodando
-            if CANCELAR_PROCESSAMENTO:
-                try:
-                    print("🚫 Tentando terminar ffmpeg...")
-                    process.terminate()
-                    process.wait(timeout=2)
-                except Exception: pass
-                finally: return False
-
-            # Se temos duração, tentamos ler o progresso
-            if total_duration > 0:
-                line = process.stderr.readline() # Pode bloquear
-                if not line: # Se readline retorna vazio mas processo ainda roda
-                    time.sleep(0.05) # Evita busy-waiting
-                    continue
-                stderr_output += line
-                if 'time=' in line:
-                    current_time_loop = time.monotonic()
-                    if current_time_loop - last_progress_time > 0.5:
-                        elapsed_seconds = _parse_ffmpeg_time(line)
-                        if elapsed_seconds > 0:
-                            percent = min(100, (elapsed_seconds / total_duration) * 100)
-                            if pbar_ffmpeg is None:
-                                pbar_ffmpeg = tqdm(total=100, unit="%", desc=f"   {descricao_acao[:20]}", bar_format='{desc}: {percentage:3.0f}%|{bar}|')
-                            
-                            update_value = percent - pbar_ffmpeg.n
-                            if update_value > 0:
-                                pbar_ffmpeg.update(update_value)
-                            last_progress_time = current_time_loop
+            # Mostra pontinhos ou frames
+            if stderr_line:
+                if "frame=" in stderr_line or "size=" in stderr_line or "time=" in stderr_line:
+                    print(".", end="", flush=True)
             else:
-                # Se NÃO temos duração (ex: unificação), imprimimos um ponto periodicamente
-                current_time_loop = time.monotonic()
-                if current_time_loop - activity_indicator_time > 1.0: # A cada 1 segundo
-                    sys.stdout.write(".") # Imprime um ponto
-                    sys.stdout.flush()    # Garante que apareça
-                    activity_indicator_time = current_time_loop
-                time.sleep(0.1) # Pausa curta para não sobrecarregar o loop while
+                time.sleep(0.1)
 
-        # Processo terminou
-        if not total_duration > 0: # Se estávamos mostrando pontos, imprime uma nova linha
-            print() # Para que a próxima mensagem não fique na mesma linha dos pontos
+        # Garante que todo o buffer foi lido
+        process.wait()
 
-        if pbar_ffmpeg:
-            if pbar_ffmpeg.n < 100: pbar_ffmpeg.update(100 - pbar_ffmpeg.n)
-            pbar_ffmpeg.close()
-
-        # Coleta o restante do stderr após o loop (importante para mensagens de erro completas)
-        stdout_final, stderr_final = process.communicate()
-        stderr_output += stderr_final
-        
-        return_code = process.returncode # Pega o código de retorno após communicate
-
-        if return_code != 0:
-            print(f"\n❌ Erro durante {descricao_acao} (código {return_code}):")
-            error_lines = stderr_output.strip().splitlines()
-            relevant_errors = [ln for ln in error_lines[-20:] if 'error' in ln.lower() or ln.strip().startswith('[') or "failed" in ln.lower()]
-            if not relevant_errors: relevant_errors = error_lines[-10:]
-            print("\n".join(f"   {line}" for line in relevant_errors))
+        if process.returncode == 0:
+            print(f"\n✅ {descricao} concluído com sucesso.")
+            return True
+        else:
+            print(f"\n❌ {descricao} falhou (código {process.returncode}).")
             return False
 
-        print(f"✅ {descricao_acao} concluída com sucesso.")
-        return True
-
-    except FileNotFoundError:
-        print(f"❌ Comando '{comando_ffmpeg[0]}' não encontrado. Verifique FFmpeg/FFprobe.")
-        return False
     except Exception as e:
-        print(f"❌ Erro inesperado durante {descricao_acao}: {str(e)}")
-        import traceback
-        traceback.print_exc()
+        print(f"❌ Erro ao executar FFmpeg: {e}")
         return False
 
 def criar_video_com_audio_ffmpeg(audio_path, video_path, duracao_segundos, resolucao_str="640x360"): # Flag 'usar_progresso_leve' removida
@@ -1025,6 +975,110 @@ def criar_video_com_audio_ffmpeg(audio_path, video_path, duracao_segundos, resol
 
     # SEMPRE passa a duração total para _executar_ffmpeg_comando para obter progresso percentual
     return _executar_ffmpeg_comando(comando, f"criação de vídeo a partir de {Path(audio_path).name}", total_duration=duracao_segundos)
+
+
+def acelerar_midia_ffmpeg(input_path: str, output_path: str, velocidade: float = 1.0, is_video: bool = False) -> bool:
+    """
+    Acelera áudio/vídeo de forma leve e estável, sem travamentos no Termux.
+    Para vídeos longos, processa o áudio e o vídeo separadamente e depois junta.
+    """
+    try:
+        if velocidade <= 0:
+            print("⚠️ Velocidade inválida. Use um valor acima de 0.")
+            return False
+
+        # Gera nome seguro para o áudio temporário
+        tmp_audio = str(Path(str(output_path).replace(".mp4", "_audio_temp.m4a")))
+        tmp_video = str(Path(str(output_path).replace(".mp4", "_video_temp.mp4")))
+
+        # Corrige limite do filtro atempo (máx. 2.0 por vez)
+        atempo_filters = []
+        restante = velocidade
+        while restante > 2.0:
+            atempo_filters.append("atempo=2.0")
+            restante /= 2.0
+        while restante < 0.5:
+            atempo_filters.append("atempo=0.5")
+            restante /= 0.5
+        atempo_filters.append(f"atempo={restante:.3f}")
+        atempo_str = ",".join(atempo_filters)
+
+        # ========================
+        # 🔊 1️⃣ Extrair + acelerar áudio
+        # ========================
+        print(f"🎧 Acelerando áudio em {velocidade}x...")
+        comando_audio = [
+            FFMPEG_BIN, "-y",
+            "-i", input_path,
+            "-vn",  # sem vídeo
+            "-filter:a", atempo_str,
+            "-c:a", "aac",
+            "-b:a", "128k",
+            "-movflags", "+faststart",
+            tmp_audio
+        ]
+
+        if not _executar_ffmpeg_comando(comando_audio, f"aceleração do áudio ({velocidade}x)"):
+            print("❌ Falha ao acelerar áudio.")
+            return False
+
+        # ========================
+        # 🎞️ 2️⃣ Ajustar vídeo (sem reencodar pesado)
+        # ========================
+        if is_video:
+            print(f"🎬 Ajustando vídeo em {velocidade}x...")
+            comando_video = [
+                FFMPEG_BIN, "-y",
+                "-i", input_path,
+                "-an",  # sem áudio
+                "-filter:v", f"setpts={1/velocidade}*PTS",
+                "-preset", "ultrafast",
+                "-c:v", "libx264",
+                "-pix_fmt", "yuv420p",
+                tmp_video
+            ]
+
+            if not _executar_ffmpeg_comando(comando_video, f"ajuste do vídeo ({velocidade}x)"):
+                print("❌ Falha ao ajustar vídeo.")
+                if os.path.exists(tmp_audio): os.remove(tmp_audio)
+                return False
+
+            # ========================
+            # 🧩 3️⃣ Unir áudio + vídeo
+            # ========================
+            print("🔗 Juntando áudio e vídeo...")
+            comando_merge = [
+                FFMPEG_BIN, "-y",
+                "-i", tmp_video,
+                "-i", tmp_audio,
+                "-c:v", "copy",
+                "-c:a", "aac",
+                "-shortest",
+                "-movflags", "+faststart",
+                output_path
+            ]
+
+            sucesso = _executar_ffmpeg_comando(comando_merge, f"junção final ({velocidade}x)")
+            if sucesso:
+                print("✅ Arquivo final criado com sucesso!")
+            else:
+                print("❌ Falha na junção final.")
+
+            # Limpeza
+            for temp in [tmp_audio, tmp_video]:
+                if os.path.exists(temp):
+                    os.remove(temp)
+            return sucesso
+
+        else:
+            # Apenas áudio
+            shutil.move(tmp_audio, output_path)
+            print("✅ Áudio acelerado com sucesso!")
+            return True
+
+    except Exception as e:
+        print(f"❌ Erro ao acelerar mídia: {e}")
+        return False
 
 # ================== MENUS PRINCIPAIS E LÓGICA DE OPERAÇÃO ==================
 
