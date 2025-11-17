@@ -182,14 +182,14 @@ SISTEMA_OPERACIONAL_INFO = {}
 # --- LIMITES DE CHUNK E CONCORRÊNCIA (AJUSTADOS PARA RATE LIMIT v4) ---
 # ==================================================================
 # ATUALIZAÇÃO v6: Mantido em 5000 caracteres por chunk (limite seguro do Edge TTS)
-LIMITE_CARACTERES_CHUNK_TTS_EDGE = 5000
+LIMITE_CARACTERES_CHUNK_TTS_EDGE = 500
 LIMITE_CARACTERES_CHUNK_TTS_GEMINI = 1000 # Mantido (já é baixo)
 
 # ==================================================================
 # ATUALIZAÇÃO v6: Reduzido para 5 tarefas simultâneas
 # Concorrência de 10 causa muitos erros ServerDisconnectedError
 # 5 tarefas é um bom equilíbrio entre velocidade e estabilidade
-LOTE_MAXIMO_TAREFAS_EDGE = 5
+LOTE_MAXIMO_TAREFAS_EDGE = 10
 # ==================================================================
 # ATUALIZAÇÃO: Mantido em 5
 LOTE_MAXIMO_TAREFAS_GEMINI = 5
@@ -1863,7 +1863,7 @@ async def iniciar_conversao_tts():
         print("❌ Nenhuma parte de texto para converter após divisão."); return
 
     # Esta é a informação crucial agora:
-    print(f"📊 Texto dividido em {total_partes} parte(s) para TTS. (Isto deve ser bem menor que 5000 agora!)")
+    print(f"📊 Texto dividido em {total_partes} parte(s) para TTS.")
     if total_partes > 1000:
         print("⚠️ ALERTA: O número de chunks ainda é alto. A formatação pode não ter sido ideal.")
     elif total_partes < 50:
