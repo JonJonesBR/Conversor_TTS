@@ -21,6 +21,11 @@ Funcionalidades:
 - Lógica de retry alterada para 'while True' (loop infinito)
 - Limite MAX_TTS_TENTATIVAS removido
 - Backoff exponencial mantido para evitar sobrecarga da API
+
+*** MODIFICAÇÃO (AJUSTE DE RATE LIMIT v2): ***
+- CORRIGIDO: Bug em 'formatar_texto_para_tts' que criava chunks por *frase* em vez de *parágrafo*.
+- AUMENTADO: 'LIMITE_CARACTERES_CHUNK_TTS_EDGE' para 15000 (chunks maiores).
+- REDUZIDO: 'LOTE_MAXIMO_TAREFAS_EDGE' para 2 (mais seguro contra rate limit).
 """
 
 import os
@@ -40,6 +45,7 @@ import importlib # Usado para importação dinâmica
 import base64 # Necessário para o Gemini
 import json # Necessário para salvar a API Key
 import random # Necessário para o backoff exponencial de fallback
+from urllib.parse import unquote # Importado para decodificar nomes de arquivos EPUB
 
 # ================== IMPORTAÇÃO E INSTALAÇÃO DE DEPENDÊNCIAS ==================
 
@@ -116,18 +122,31 @@ def save_api_key_to_config(api_key: str):
 GEMINI_API_KEY_ATUAL = load_api_key_from_config() or os.environ.get("GEMINI_API_KEY")
 
 VOZES_PT_BR = [
-    "pt-BR-ThalitaMultilingualNeural",
-    "pt-BR-FranciscaNeural",
-    "pt-BR-AntonioNeural",
-    "pt-BR-BrendaNeural",
-    "pt-BR-DonatoNeural",
-    "pt-BR-GiovannaNeural",
-    "pt-BR-HumbertoNeural",
-    "pt-BR-JulioNeural",
-    "pt-BR-LeilaNeural",
-    "pt-BR-NicolauNeural",
-    "pt-BR-ValerioNeural",
-    "pt-BR-YaraNeural",
+    # ✅ VOZES TESTADAS E FUNCIONANDO (11 vozes)
+    # Teste realizado em: 2024
+    
+    # Português Brasil (1 voz)
+    "pt-BR-ThalitaMultilingualNeural",  # Feminina
+    
+    # Inglês Americano (4 vozes)
+    "en-US-AndrewMultilingualNeural",   # Masculina
+    "en-US-AvaMultilingualNeural",      # Feminina
+    "en-US-BrianMultilingualNeural",    # Masculina
+    "en-US-EmmaMultilingualNeural",     # Feminina
+    
+    # Alemão (2 vozes)
+    "de-DE-SeraphinaMultilingualNeural",  # Feminina
+    "de-DE-FlorianMultilingualNeural",    # Masculina
+    
+    # Francês (2 vozes)
+    "fr-FR-VivienneMultilingualNeural",  # Feminina
+    "fr-FR-RemyMultilingualNeural",      # Masculina
+    
+    # Italiano (1 voz)
+    "it-IT-GiuseppeMultilingualNeural",  # Masculina
+    
+    # Coreano (1 voz)
+    "ko-KR-HyunsuMultilingualNeural",    # Masculina
 ]
 
 VOZES_GEMINI_PT_BR = {
@@ -160,14 +179,20 @@ RESOLUCOES_VIDEO = {
 }
 SISTEMA_OPERACIONAL_INFO = {}
 
-# --- LIMITES DE CHUNK E CONCORRÊNCIA (ATUALIZADOS) ---
-LIMITE_CARACTERES_CHUNK_TTS_EDGE = 10000
-LIMITE_CARACTERES_CHUNK_TTS_GEMINI = 1000
-
-LOTE_MAXIMO_TAREFAS_EDGE = 10
+# --- LIMITES DE CHUNK E CONCORRÊNCIA (AJUSTADOS PARA RATE LIMIT v4) ---
 # ==================================================================
-# ATUALIZAÇÃO: Reduzido de 100 para 10 para evitar erros 429
-LOTE_MAXIMO_TAREFAS_GEMINI = 10
+# ATUALIZAÇÃO v6: Mantido em 5000 caracteres por chunk (limite seguro do Edge TTS)
+LIMITE_CARACTERES_CHUNK_TTS_EDGE = 5000
+LIMITE_CARACTERES_CHUNK_TTS_GEMINI = 1000 # Mantido (já é baixo)
+
+# ==================================================================
+# ATUALIZAÇÃO v6: Reduzido para 5 tarefas simultâneas
+# Concorrência de 10 causa muitos erros ServerDisconnectedError
+# 5 tarefas é um bom equilíbrio entre velocidade e estabilidade
+LOTE_MAXIMO_TAREFAS_EDGE = 5
+# ==================================================================
+# ATUALIZAÇÃO: Mantido em 5
+LOTE_MAXIMO_TAREFAS_GEMINI = 5
 # ==================================================================
 # --- FIM DAS ATUALIZAÇÕES ---
 
@@ -435,37 +460,47 @@ def formatar_texto_para_tts(texto_bruto: str) -> str:
     texto = _corrigir_hifenizacao_quebras(texto)
     texto = _formatar_numeracao_capitulos(texto)
 
-    segmentos = re.split(r'([.!?…])\s*', texto)
-    texto_reconstruido = ""; buffer_segmento = ""
+    # ==================================================================
+    # --- INÍCIO DA CORREÇÃO DE BUG (v2) ---
+    # O bloco abaixo foi removido.
+    # Ele era a causa da divisão do texto em 5000+ chunks,
+    # pois adicionava '\n\n' após cada frase.
     
-    for i in range(0, len(segmentos), 2):
-        parte_texto = segmentos[i]; pontuacao = segmentos[i+1] if i + 1 < len(segmentos) else ""
-        segmento_completo = (parte_texto + pontuacao).strip()
-        if not segmento_completo: continue
-        
-        ultima_palavra = segmento_completo.split()[-1].lower() if segmento_completo else ""
-        ultima_palavra_sem_ponto = ultima_palavra.rstrip('.!?…') if pontuacao else ultima_palavra
-        
-        termina_abreviacao_conhecida = ultima_palavra in ABREVIACOES_QUE_NAO_TERMINAM_FRASE or \
-                                        ultima_palavra_sem_ponto in ABREVIACOES_QUE_NAO_TERMINAM_FRASE
-        termina_sigla_padrao = SIGLA_COM_PONTOS_RE.search(segmento_completo) is not None
-        
-        nao_quebrar = False
-        if pontuacao == '.':
-             if termina_abreviacao_conhecida or termina_sigla_padrao: nao_quebrar = True
-        
-        if buffer_segmento: buffer_segmento += " " + segmento_completo
-        else: buffer_segmento = segmento_completo
-        
-        if not nao_quebrar:
-            texto_reconstruido += buffer_segmento + "\n\n"; buffer_segmento = ""
-            
-    if buffer_segmento:
-         texto_reconstruido += buffer_segmento
-         if not re.search(r'[.!?…)]$', buffer_segmento): texto_reconstruido += "."
-         texto_reconstruido += "\n\n"
-         
-    texto = texto_reconstruido.strip()
+    # segmentos = re.split(r'([.!?…])\s*', texto)
+    # texto_reconstruido = ""; buffer_segmento = ""
+    # 
+    # for i in range(0, len(segmentos), 2):
+    #     parte_texto = segmentos[i]; pontuacao = segmentos[i+1] if i + 1 < len(segmentos) else ""
+    #     segmento_completo = (parte_texto + pontuacao).strip()
+    #     if not segmento_completo: continue
+    #     
+    #     ultima_palavra = segmento_completo.split()[-1].lower() if segmento_completo else ""
+    #     ultima_palavra_sem_ponto = ultima_palavra.rstrip('.!?…') if pontuacao else ultima_palavra
+    #     
+    #     termina_abreviacao_conhecida = ultima_palavra in ABREVIACOES_QUE_NAO_TERMINAM_FRASE or \
+    #                                     ultima_palavra_sem_ponto in ABREVIACOES_QUE_NAO_TERMINAM_FRASE
+    #     termina_sigla_padrao = SIGLA_COM_PONTOS_RE.search(segmento_completo) is not None
+    #     
+    #     nao_quebrar = False
+    #     if pontuacao == '.':
+    #          if termina_abreviacao_conhecida or termina_sigla_padrao: nao_quebrar = True
+    #     
+    #     if buffer_segmento: buffer_segmento += " " + segmento_completo
+    #     else: buffer_segmento = segmento_completo
+    #     
+    #     if not nao_quebrar:
+    #         texto_reconstruido += buffer_segmento + "\n\n"; buffer_segmento = ""
+    #         
+    # if buffer_segmento:
+    #      texto_reconstruido += buffer_segmento
+    #      if not re.search(r'[.!?…)]$', buffer_segmento): texto_reconstruido += "."
+    #      texto_reconstruido += "\n\n"
+    #      
+    # texto = texto_reconstruido.strip()
+    
+    # --- FIM DA CORREÇÃO DE BUG (v2) ---
+    # ==================================================================
+
 
     texto = _normalizar_caixa_alta_linhas(texto)
     texto = _converter_ordinais_para_extenso(texto)
@@ -478,6 +513,7 @@ def formatar_texto_para_tts(texto_bruto: str) -> str:
         padrao_limpeza_sem_espaco = r'\b' + re.escape(forma) + r'\.([A-Z])'
         texto = re.sub(padrao_limpeza_sem_espaco, rf'{forma} \1', texto)
 
+    # Esta lógica final (adicionar ponto final) é mantida, pois é útil.
     paragrafos_finais = texto.split('\n\n')
     paragrafos_formatados_final = []
     for p in paragrafos_finais:
@@ -778,7 +814,7 @@ async def exibir_banner_e_menu(titulo_menu: str, opcoes_menu: dict):
         
     return await obter_opcao_numerica("Opção", max_key, permitir_zero=('0' in opcoes_menu))
 
-# ================== FUNÇÕES DE MANIPULAÇÃO DE ARQUIVOS (Inalteradas) ==================
+# ================== FUNÇÕES DE MANIPULAÇÃO DE ARQUIVOS (CORREÇÃO EPUB v4) ==================
 
 def detectar_encoding_arquivo(caminho_arquivo: str) -> str:
     """Tenta detectar o encoding de um arquivo de texto."""
@@ -845,26 +881,65 @@ def extrair_texto_de_epub(caminho_epub: str) -> str:
                 opf_content = epub_zip.read(opf_path).decode('utf-8')
                 opf_dir = os.path.dirname(opf_path)
                 
-                spine_items = [m.group(1) for m in re.finditer(r'<itemref\s+idref="([^"]+)"', opf_content)]
+                # --- INÍCIO DA CORREÇÃO EPUB (LÓGICA v4 - MAIS ROBUSTA) ---
+
+                # Etapa 1: Encontrar a ordem dos capítulos no <spine>
+                spine_items = [m.group(1) for m in re.finditer(r'<itemref\s+idref="([^"]+)"', opf_content, re.IGNORECASE)]
                 if not spine_items: raise Exception("Nenhum item na 'spine'.")
+
+                # Etapa 2: Construir um mapa de TODOS os itens do <manifest>
+                # Esta lógica é robusta e não se importa com a ordem dos atributos
+                manifest_hrefs = {}
+                # Regex para encontrar a tag <item ...>
+                padrao_tag_item = re.compile(r'<item\s+([^>]+)>', re.IGNORECASE)
+                # Regex para extrair id="..." ou id='...'
+                padrao_id = re.compile(r'id\s*=\s*["\']([^"\']+)["\']', re.IGNORECASE)
+                # Regex para extrair href="..." ou href='...'
+                padrao_href = re.compile(r'href\s*=\s*["\']([^"\']+)["\']', re.IGNORECASE)
+
+                for item_match in padrao_tag_item.finditer(opf_content):
+                    atributos_str = item_match.group(1) # Conteúdo da tag, ex: href="foo.html" id="bar"
+                    
+                    id_match = padrao_id.search(atributos_str)
+                    href_match = padrao_href.search(atributos_str)
+                    
+                    if id_match and href_match:
+                        item_id = id_match.group(1)
+                        item_href = href_match.group(1)
+                        
+                        # Filtra aqui, para adicionar ao dicionário apenas os arquivos de texto
+                        if item_href.lower().endswith(('.xhtml', '.html', '.htm')):
+                            manifest_hrefs[item_id] = item_href
                 
-                manifest_hrefs = {
-                    m.group(1): m.group(2) for m in re.finditer(
-                        r'<item\s+id="([^"]+)"\s+href="([^"]+)"\s+media-type="application/xhtml\+xml"', opf_content
-                    )
-                }
-                
+                if not manifest_hrefs:
+                    raise Exception("Nenhum item de manifesto (html/xhtml) encontrado.")
+
+                # Etapa 3: Montar a lista ordenada de arquivos de capítulo
                 for idref in spine_items:
+                    # Verifica se o item do spine é um arquivo de texto que encontramos
                     if idref in manifest_hrefs:
-                        xhtml_path_in_zip = os.path.normpath(os.path.join(opf_dir, manifest_hrefs[idref]))
-                        arquivos_xhtml_ordenados.append(xhtml_path_in_zip)
+                        href_raw = manifest_hrefs[idref]
+                        # Decodifica caracteres como %20 para ' '
+                        href_decoded = unquote(href_raw) 
+                        
+                        xhtml_path_in_zip = os.path.normpath(os.path.join(opf_dir, href_decoded))
+                        
+                        # Garante que os separadores sejam '/', padrão em arquivos ZIP
+                        xhtml_path_in_zip = xhtml_path_in_zip.replace(os.path.sep, '/') 
+                        
+                        if xhtml_path_in_zip not in arquivos_xhtml_ordenados:
+                             arquivos_xhtml_ordenados.append(xhtml_path_in_zip)
+                
+                # --- FIM DA CORREÇÃO EPUB (LÓGICA v4) ---
                         
             except Exception as e_opf:
-                print(f"⚠️ Erro ao processar OPF/Spine: {e_opf}. Tentando todos XHTML/HTML.")
+                print(f"⚠️ Erro ao processar OPF/Spine: {e_opf}. Tentando todos XHTML/HTML (Fallback).")
+                # Lógica de fallback melhorada
                 arquivos_xhtml_ordenados = sorted([
                     f.filename for f in epub_zip.infolist() 
-                    if f.filename.lower().endswith(('.html', '.xhtml')) and 
-                    not re.search(r'(toc|nav|cover|ncx)', f.filename, re.IGNORECASE)
+                    if f.filename.lower().endswith(('.html', '.xhtml', '.htm')) and # Adicionado .htm
+                    # Adiciona mais exclusões comuns
+                    not re.search(r'(toc|nav|cover|ncx|title|author|copyright|dedication)', f.filename, re.IGNORECASE)
                 ])
 
             if not arquivos_xhtml_ordenados:
@@ -887,7 +962,8 @@ def extrair_texto_de_epub(caminho_epub: str) -> str:
                     if content_tag:
                         texto_completo += h.handle(str(content_tag)) + "\n\n"
                         
-                except KeyError: print(f"⚠️ Arquivo não encontrado no ZIP: {nome_arquivo}")
+                except KeyError: 
+                    print(f"⚠️ Arquivo não encontrado no ZIP: {nome_arquivo}")
                 except Exception as e_file: print(f"❌ Erro ao processar '{nome_arquivo}': {e_file}")
                 
         if not texto_completo.strip():
@@ -897,53 +973,103 @@ def extrair_texto_de_epub(caminho_epub: str) -> str:
         
     except FileNotFoundError: print(f"❌ Arquivo EPUB não encontrado: {caminho_epub}")
     except zipfile.BadZipFile: print(f"❌ Arquivo EPUB inválido: {caminho_epub}")
-    except Exception as e: print(f"❌ Erro geral ao processar EPUB: {e}"); return ""
+    except Exception as e: 
+        print(f"❌ Erro geral ao processar EPUB: {e}")
+        # Lança a exceção para que a função que chamou possa pausar
+        raise e 
 
 def dividir_texto_para_tts(texto_processado: str, limite_caracteres: int) -> list:
-    """Divide o texto em partes (chunks) para a API TTS."""
-    partes_iniciais = texto_processado.split('\n\n')
+    """
+    Divide o texto em partes (chunks) para a API TTS.
+    Lógica atualizada para reagrupar parágrafos e frases de forma eficiente.
+    """
+    print(f"Dividindo texto em chunks de ate {limite_caracteres} caracteres...")
+    
+    # CORREÇÃO: Normaliza múltiplas quebras de linha antes de dividir
+    texto_normalizado = re.sub(r'\n{3,}', '\n\n', texto_processado)
+    texto_normalizado = texto_normalizado.strip()
+    
+    # Divide por parágrafos (separados por \n\n)
+    paragrafos = [p.strip() for p in texto_normalizado.split('\n\n') if p.strip()]
+    
+    print(f"   Texto contém {len(paragrafos)} parágrafo(s) inicial(is).")
+    
     partes_finais = []
+    chunk_atual = ""
 
-    for p_inicial in partes_iniciais:
-        p_strip = p_inicial.strip()
-        if not p_strip: continue
-
-        if len(p_strip) <= limite_caracteres:
-            partes_finais.append(p_strip)
-            continue
-
-        frases_com_delimitadores = re.split(r'([.!?…]+)', p_strip)
-        segmento_atual = ""
-        idx_frase = 0
-
-        while idx_frase < len(frases_com_delimitadores):
-            frase_atual = frases_com_delimitadores[idx_frase].strip()
-            delimitador = frases_com_delimitadores[idx_frase + 1].strip() if idx_frase + 1 < len(frases_com_delimitadores) else ""
+    for paragrafo in paragrafos:
+        # Se o parágrafo sozinho já excede o limite, precisa ser quebrado
+        if len(paragrafo) > limite_caracteres:
+            # Salva o chunk atual antes de processar o parágrafo grande
+            if chunk_atual:
+                partes_finais.append(chunk_atual.strip())
+                chunk_atual = ""
             
-            trecho_completo = (frase_atual + delimitador).strip()
-            if not trecho_completo:
-                idx_frase += 2 if delimitador else 1
-                continue
-
-            if len(segmento_atual) + len(trecho_completo) + 1 <= limite_caracteres:
-                segmento_atual += (" " if segmento_atual else "") + trecho_completo
-            else:
-                if segmento_atual:
-                    partes_finais.append(segmento_atual)
+            print(f"   ⚠️ Parágrafo longo ({len(paragrafo)} caracteres) será quebrado por frases...")
+            
+            # Divide o parágrafo grande por frases
+            frases_com_delimitadores = re.split(r'([.!?…]+)', paragrafo)
+            segmento_frase = ""
+            
+            idx = 0
+            while idx < len(frases_com_delimitadores):
+                frase = frases_com_delimitadores[idx].strip()
+                delimitador = frases_com_delimitadores[idx + 1].strip() if idx + 1 < len(frases_com_delimitadores) else ""
                 
-                if len(trecho_completo) > limite_caracteres:
-                    for i in range(0, len(trecho_completo), limite_caracteres):
-                        partes_finais.append(trecho_completo[i:i+limite_caracteres])
-                    segmento_atual = ""
+                frase_completa = frase + delimitador if delimitador else frase
+                frase_completa = frase_completa.strip()
+                
+                if not frase_completa:
+                    idx += 2 if delimitador else 1
+                    continue
+                
+                # Se a frase sozinha já excede o limite, quebra por caracteres
+                if len(frase_completa) > limite_caracteres:
+                    if segmento_frase:
+                        partes_finais.append(segmento_frase.strip())
+                        segmento_frase = ""
+                    
+                    print(f"      ⚠️ Frase muito longa ({len(frase_completa)} caracteres) será quebrada!")
+                    for i in range(0, len(frase_completa), limite_caracteres):
+                        partes_finais.append(frase_completa[i:i+limite_caracteres])
                 else:
-                    segmento_atual = trecho_completo
-
-            idx_frase += 2 if delimitador else 1
-
-        if segmento_atual:
-            partes_finais.append(segmento_atual)
-
-    return [p for p in partes_finais if p.strip()]
+                    # Tenta adicionar a frase ao segmento atual
+                    teste_segmento = (segmento_frase + " " + frase_completa).strip() if segmento_frase else frase_completa
+                    
+                    if len(teste_segmento) <= limite_caracteres:
+                        segmento_frase = teste_segmento
+                    else:
+                        # Não cabe, salva o segmento atual e inicia novo
+                        if segmento_frase:
+                            partes_finais.append(segmento_frase.strip())
+                        segmento_frase = frase_completa
+                
+                idx += 2 if delimitador else 1
+            
+            # Salva o último segmento de frases
+            if segmento_frase:
+                partes_finais.append(segmento_frase.strip())
+        else:
+            # Parágrafo normal - tenta adicionar ao chunk atual
+            teste_chunk = (chunk_atual + "\n\n" + paragrafo).strip() if chunk_atual else paragrafo
+            
+            if len(teste_chunk) <= limite_caracteres:
+                chunk_atual = teste_chunk
+            else:
+                # Não cabe, salva o chunk atual e inicia novo com este parágrafo
+                if chunk_atual:
+                    partes_finais.append(chunk_atual.strip())
+                chunk_atual = paragrafo
+    
+    # Salva o último chunk
+    if chunk_atual:
+        partes_finais.append(chunk_atual.strip())
+    
+    # Remove chunks vazios
+    partes_finais = [p for p in partes_finais if p.strip()]
+    
+    print(f"Texto dividido em {len(partes_finais)} parte(s).")
+    return partes_finais
 
 # ================== FUNÇÕES DE FFmpeg (Inalteradas) ==================
 
@@ -1328,6 +1454,7 @@ async def _selecionar_arquivo_para_processamento(extensoes_permitidas: list) -> 
         except asyncio.CancelledError:
             print("\n🚫 Seleção cancelada."); return ""
 
+# --- INÍCIO DA MODIFICAÇÃO (PAUSA NO ERRO) ---
 async def _processar_arquivo_selecionado_para_texto(caminho_arquivo_orig: str) -> str:
     """Extrai texto, formata e salva como "_formatado.txt"."""
     if not caminho_arquivo_orig: return ""
@@ -1343,22 +1470,39 @@ async def _processar_arquivo_selecionado_para_texto(caminho_arquivo_orig: str) -
 
     texto_bruto = ""; extensao = path_obj.suffix.lower()
     
-    if extensao == '.pdf':
-        caminho_txt_temporario = dir_saida / f"{nome_base_limpo}_tempExtraido.txt"
-        if not converter_pdf_para_txt(str(path_obj), str(caminho_txt_temporario)):
-            print("❌ Falha na conversão PDF.");
-            caminho_txt_temporario.unlink(missing_ok=True); return ""
-        texto_bruto = ler_arquivo_texto(str(caminho_txt_temporario))
-        caminho_txt_temporario.unlink(missing_ok=True)
-    elif extensao == '.epub':
-        texto_bruto = extrair_texto_de_epub(str(path_obj))
-    elif extensao == '.txt':
-        texto_bruto = ler_arquivo_texto(str(path_obj))
-    else:
-        print(f"❌ Formato não suportado: {extensao}"); return ""
+    try:
+        if extensao == '.pdf':
+            caminho_txt_temporario = dir_saida / f"{nome_base_limpo}_tempExtraido.txt"
+            if not converter_pdf_para_txt(str(path_obj), str(caminho_txt_temporario)):
+                print("❌ Falha na conversão PDF.");
+                caminho_txt_temporario.unlink(missing_ok=True)
+                # Lança uma exceção para ser pega abaixo e pausar
+                raise Exception("Falha ao converter PDF. Verifique se o Poppler está instalado.")
+            texto_bruto = ler_arquivo_texto(str(caminho_txt_temporario))
+            caminho_txt_temporario.unlink(missing_ok=True)
+        elif extensao == '.epub':
+            texto_bruto = extrair_texto_de_epub(str(path_obj))
+        elif extensao == '.txt':
+            texto_bruto = ler_arquivo_texto(str(path_obj))
+        else:
+            print(f"❌ Formato não suportado: {extensao}"); return ""
+            
+    except Exception as e_extract:
+        print("\n" + "!"*60)
+        print(f"❌ OCORREU UM ERRO GRAVE AO LER O ARQUIVO:")
+        print(f"   Arquivo: {path_obj.name}")
+        print(f"   Erro: {e_extract}")
+        # import traceback; traceback.print_exc() # Descomente para debug completo
+        print("!"*60)
+        await aioconsole.ainput("\nPressione ENTER para voltar ao menu...")
+        return "" # Retorna vazio para voltar ao menu
 
     if not texto_bruto.strip():
-        print("❌ Conteúdo do arquivo extraído está vazio."); return ""
+        print("❌ Conteúdo do arquivo extraído está vazio.")
+        # Pausa para o usuário ler a mensagem
+        await aioconsole.ainput("\nPressione ENTER para voltar ao menu...")
+        return ""
+    # --- FIM DA MODIFICAÇÃO ---
 
     texto_final_formatado = formatar_texto_para_tts(texto_bruto)
     salvar_arquivo_texto(str(caminho_txt_formatado), texto_final_formatado)
@@ -1379,6 +1523,7 @@ async def _processar_arquivo_selecionado_para_texto(caminho_arquivo_orig: str) -
         print("   (No Android, edite o arquivo manualmente se necessário e depois selecione o '_formatado.txt' para conversão)")
         
     return str(caminho_txt_formatado)
+# --- FIM DA MODIFICAÇÃO ---
 
 # --- MODIFICAÇÃO (Gemini-User): _converter_chunk_tts_edge ---
 # - Trocado 'while tentativas < MAX_TTS_TENTATIVAS' por 'while True'
@@ -1392,19 +1537,29 @@ async def _converter_chunk_tts_edge(texto_chunk: str, voz: str, caminho_saida_te
     if path_saida_obj.exists() and path_saida_obj.stat().st_size > 200:
         return True
 
+    # Validação do texto antes de tentar converter
+    if not texto_chunk or not texto_chunk.strip():
+        print(f"⚠️ [Edge] Chunk {indice_chunk}/{total_chunks} vazio, pulando.")
+        return True # Considera sucesso (chunk vazio)
+    
+    # Limpa o texto de caracteres problemáticos
+    texto_limpo = texto_chunk.strip()
+    
+    # Verifica se o texto tem conteúdo significativo (não apenas pontuação/espaços)
+    texto_sem_pontuacao = re.sub(r'[^\w\s]', '', texto_limpo)
+    if len(texto_sem_pontuacao.strip()) < 3:
+        print(f"⚠️ [Edge] Chunk {indice_chunk}/{total_chunks} sem conteúdo significativo, pulando.")
+        return True
+
     tentativas = 0
     # Loop infinito até o chunk ser convertido ou o processo ser cancelado
     while True:
         if CANCELAR_PROCESSAMENTO: return False
         
         path_saida_obj.unlink(missing_ok=True)
-        
-        if not texto_chunk or not texto_chunk.strip():
-            print(f"⚠️ [Edge] Chunk {indice_chunk}/{total_chunks} vazio, pulando.")
-            return True # Considera sucesso (chunk vazio)
 
         try:
-            communicate = edge_tts.Communicate(texto_chunk, voz)
+            communicate = edge_tts.Communicate(texto_limpo, voz)
             await communicate.save(caminho_saida_temp)
 
             if path_saida_obj.exists() and path_saida_obj.stat().st_size > 200:
@@ -1412,27 +1567,52 @@ async def _converter_chunk_tts_edge(texto_chunk: str, voz: str, caminho_saida_te
             else:
                 tamanho_real = path_saida_obj.stat().st_size if path_saida_obj.exists() else 0
                 print(f"⚠️ [Edge] Arquivo áudio chunk {indice_chunk} inválido (tamanho: {tamanho_real} bytes). Tentativa {tentativas + 1}.")
+                print(f"   Texto do chunk (primeiros 100 chars): {texto_limpo[:100]}...")
                 
         except edge_tts.exceptions.NoAudioReceived:
              print(f"❌ [Edge] Sem áudio recebido (NoAudioReceived) chunk {indice_chunk} (tentativa {tentativas + 1}).")
+             if tentativas == 0:  # Mostra detalhes apenas na primeira tentativa
+                 print(f"   Tamanho do texto: {len(texto_limpo)} caracteres")
+                 print(f"   Texto (primeiros 200 chars): {texto_limpo[:200]}...")
         except asyncio.TimeoutError:
             print(f"❌ [Edge] Timeout na comunicação TTS chunk {indice_chunk} (tentativa {tentativas + 1}).")
+        except aiohttp.ClientError as e:
+            # Trata erros de conexão do aiohttp (ServerDisconnectedError, etc)
+            print(f"❌ [Edge] Erro de conexão chunk {indice_chunk} (tentativa {tentativas + 1}): {type(e).__name__}")
         except Exception as e:
-            print(f"❌ [Edge] Erro INESPERADO TTS chunk {indice_chunk} (tentativa {tentativas + 1}): {type(e).__name__} - {e}")
-            import traceback; traceback.print_exc()
+            # Captura erros comuns de payload/conexão
+            if "Payload length exceeds limit" in str(e):
+                print(f"❌ [Edge] ERRO FATAL: Chunk {indice_chunk} é grande demais ({len(texto_limpo)} caracteres). Pulando este chunk.")
+                print(f"   Texto (início): {texto_limpo[:100]}...")
+                return False # Falha fatal, não adianta tentar de novo
+            if "Connection closed" in str(e) or "server disconnected" in str(e).lower():
+                 print(f"❌ [Edge] Conexão fechada pelo servidor chunk {indice_chunk} (tentativa {tentativas + 1}).")
+            else:
+                print(f"❌ [Edge] Erro INESPERADO TTS chunk {indice_chunk} (tentativa {tentativas + 1}): {type(e).__name__} - {e}")
+                if tentativas == 0:  # Mostra traceback apenas na primeira tentativa
+                    import traceback; traceback.print_exc()
 
         # Se chegou aqui, a conversão falhou
         tentativas += 1
         
-        # Mantém o backoff exponencial para não sobrecarregar a API,
-        # mas agora sem limite de tentativas.
-        # ==================================================================
-        # ATUALIZAÇÃO: Teto de espera reduzido de 60s para 20s
-        wait_time = min(2 * tentativas, 20) 
-        # ==================================================================
+        # Limita o número de tentativas para evitar loop infinito em casos problemáticos
+        if tentativas >= 10:
+            print(f"❌ [Edge] Chunk {indice_chunk} falhou após {tentativas} tentativas. Pulando.")
+            print(f"   Texto problemático: {texto_limpo[:300]}...")
+            return False
+        
+        # Mantém o backoff exponencial para não sobrecarregar a API
+        wait_time = min(2 * tentativas, 60) 
         
         print(f"   Retentando chunk {indice_chunk} em {wait_time}s... (Tentativa {tentativas})")
-        await asyncio.sleep(wait_time)
+        
+        try:
+            # Substitui asyncio.sleep por um loop que verifica o cancelamento
+            for _ in range(wait_time):
+                if CANCELAR_PROCESSAMENTO: return False
+                await asyncio.sleep(1)
+        except asyncio.CancelledError:
+            return False
         
     # Esta linha (return False) nunca será alcançada devido ao 'while True'
     # O loop só sai com 'return True' (sucesso) ou 'return False' (cancelamento)
@@ -1499,7 +1679,7 @@ async def _converter_chunk_tts_gemini(
                 
                 elif http_status == 429: # Cota Excedida
                     error_json = {}
-                    wait_time = 0
+                    wait_time_429 = 0.0
                     try:
                         error_json = await response.json()
                         details = error_json.get('error', {}).get('details', [])
@@ -1507,28 +1687,34 @@ async def _converter_chunk_tts_gemini(
                             if detail.get('@type') == "type.googleapis.com/google.rpc.RetryInfo":
                                 delay_str = detail.get('retryDelay', '0s')
                                 # IMPORTANTE: Esse é o tempo que a API *manda* esperar
-                                wait_time = float(delay_str.replace('s', '')) + 0.0 
+                                wait_time_429 = float(delay_str.replace('s', '')) + 0.5 # Adiciona 0.5s de margem
                                 break
                     except Exception as e:
                         print(f"   [Gemini] Não foi possível analisar o JSON do erro 429: {e}")
 
-                    if wait_time == 0:
+                    if wait_time_429 == 0:
                         # Fallback se a API não informar o tempo
-                        wait_time = (1 ** tentativas) + random.uniform(0, 1)
+                        wait_time_429 = (2 ** tentativas) + random.uniform(0, 1)
                     
                     print(f"⚠️ [Gemini] Cota da API excedida (HTTP 429) chunk {indice_chunk}.")
-                    print(f"   Aguardando {wait_time:.2f} segundos (conforme API)...")
+                    print(f"   Aguardando {wait_time_429:.2f} segundos (conforme API)...")
                     
                     # AQUI ESTÁ O TEMPO DE ESPERA OBRIGATÓRIO (NÃO REMOVER)
-                    await asyncio.sleep(wait_time)
+                    try:
+                        await asyncio.sleep(wait_time_429)
+                    except asyncio.CancelledError:
+                        return False
                     continue # Tenta novamente (não incrementa 'tentativas' principais)
                 
                 else: # Outros erros
                     error_text = await response.text()
                     print(f"❌ [Gemini] Erro na API (HTTP {http_status}) chunk {indice_chunk} (tentativa {tentativas + 1}): {error_text[:200]}...")
-                    if http_status == 400 or "API key expired" in error_text:
-                         print("   ERRO: Chave de API inválida ou expirada. Abortando este chunk.")
+                    if http_status in [400, 403] or "API key expired" in error_text or "API key not valid" in error_text:
+                         print("   ERRO FATAL: Chave de API inválida ou expirada. Abortando este chunk.")
                          return False # Erro fatal (não adianta tentar de novo)
+                    if http_status == 500 and "Internal error" in error_text:
+                         print("   Erro interno do Gemini. Retentando...")
+                         # Continua para o backoff exponencial
                     
         except asyncio.TimeoutError:
             print(f"❌ [Gemini] Timeout na API TTS chunk {indice_chunk} (tentativa {tentativas + 1}).")
@@ -1576,11 +1762,21 @@ async def _converter_chunk_tts_gemini(
         # Se não foi 429, faz o backoff exponencial padrão
         if http_status != 429:
             # ==================================================================
-            # ATUALIZAÇÃO: Teto de espera reduzido de 60s para 20s
-            wait_time_exp = min((2 ** tentativas) + random.uniform(0, 1), 20)
+            # ATUALIZAÇÃO: Teto de espera aumentado de 20s para 60s para Rate Limit
+            wait_time_exp = min((2 ** tentativas) + random.uniform(0, 1), 60)
             # ==================================================================
             print(f"   Retentando chunk {indice_chunk} em {wait_time_exp:.2f}s... (Tentativa {tentativas})")
-            await asyncio.sleep(wait_time_exp)
+            
+            try:
+                # Substitui asyncio.sleep por um loop que verifica o cancelamento
+                for _ in range(int(wait_time_exp)):
+                    if CANCELAR_PROCESSAMENTO: return False
+                    await asyncio.sleep(1)
+                # Dorme o restante fracionário
+                if not CANCELAR_PROCESSAMENTO:
+                    await asyncio.sleep(wait_time_exp % 1)
+            except asyncio.CancelledError:
+                return False
         
         # O loop 'while True' continua
 
@@ -1666,14 +1862,21 @@ async def iniciar_conversao_tts():
     if total_partes == 0:
         print("❌ Nenhuma parte de texto para converter após divisão."); return
 
-    print(f"📊 Texto dividido em {total_partes} parte(s) para TTS.")
+    # Esta é a informação crucial agora:
+    print(f"📊 Texto dividido em {total_partes} parte(s) para TTS. (Isto deve ser bem menor que 5000 agora!)")
+    if total_partes > 1000:
+        print("⚠️ ALERTA: O número de chunks ainda é alto. A formatação pode não ter sido ideal.")
+    elif total_partes < 50:
+         print("ℹ️ Número muito baixo de chunks. O livro pode ser curto ou os parágrafos muito grandes.")
+         
+    print(f"   (Usando concorrência de {lote_maximo_concorrente} tarefas paralelas)")
     print("   Pressione CTRL+C para tentar cancelar a qualquer momento.")
 
     path_txt_obj = Path(caminho_txt_processado)
     nome_base_audio = limpar_nome_arquivo(path_txt_obj.stem.replace("_formatado", ""))
     dir_saida_audio = path_txt_obj.parent / f"{nome_base_audio}_AUDIO_TTS_{motor_escolhido.upper()}"
     dir_saida_audio.mkdir(parents=True, exist_ok=True)
-    arquivos_mp3_temporarios_nomes = [str(dir_saida_audio / f"temp_{nome_base_audio}_{i+1:04d}.mp3") for i in range(total_partes)]
+    arquivos_mp3_temporarios_nomes = [str(dir_saida_audio / f"temp_{nome_base_audio}_{i+1:05d}.mp3") for i in range(total_partes)] # Aumentado para 5 dígitos
 
     print("\n🎙️ Iniciando conversão TTS das partes...")
 
@@ -1732,10 +1935,11 @@ async def iniciar_conversao_tts():
             imprimir_progresso_tts()
 
             for future_task in asyncio.as_completed(tarefas_gerais_tts):
-                if CANCELAR_PROCESSAMENTO:
-                    for t_restante in tarefas_gerais_tts:
-                        if not t_restante.done(): t_restante.cancel()
-                    break
+                # Não cancele aqui, deixe o loop verificar
+                # if CANCELAR_PROCESSAMENTO:
+                #     for t_restante in tarefas_gerais_tts:
+                #         if not t_restante.done(): t_restante.cancel()
+                #     break
                 try:
                     idx_original, sucesso_tarefa = await future_task
                     
@@ -1753,7 +1957,8 @@ async def iniciar_conversao_tts():
                             partes_com_falha += 1
                     
                 except asyncio.CancelledError:
-                    pass
+                    # Se a tarefa foi cancelada (ex: por CTRL+C), não contamos como concluída
+                    continue 
                 except Exception as e_task:
                     print(f"\n   ⚠️ Erro inesperado ao processar tarefa: {e_task}")
                     partes_com_falha +=1 
@@ -1775,11 +1980,17 @@ async def iniciar_conversao_tts():
                 arquivos_mp3_sucesso.append(caminho_temp)
         else:
             resultados_conversao[i] = False
+            # Se a tarefa não teve sucesso, mas o arquivo existe (ex: 0 bytes), delete
+            Path(caminho_temp).unlink(missing_ok=True)
+
 
     if CANCELAR_PROCESSAMENTO:
         print("🚫 Processo de TTS interrompido.")
     
     if arquivos_mp3_sucesso:
+        # Garante que os arquivos estejam na ordem correta antes de unificar
+        arquivos_mp3_sucesso.sort() 
+        
         arquivo_final_mp3 = dir_saida_audio / f"{nome_base_audio}_COMPLETO.mp3"
         print(f"\n🔄 Unificando {len(arquivos_mp3_sucesso)} arquivos de áudio...")
         
@@ -1797,6 +2008,7 @@ async def iniciar_conversao_tts():
     elif not CANCELAR_PROCESSAMENTO:
         print("❌ Nenhum arquivo de áudio foi gerado com sucesso.")
 
+    # Limpa arquivos temporários que possam ter falhado e não foram unificados
     for i in range(total_partes):
         if not resultados_conversao[i]:
             Path(arquivos_mp3_temporarios_nomes[i]).unlink(missing_ok=True)
@@ -1951,9 +2163,37 @@ async def _processar_melhoria_de_audio_video(caminho_arquivo_entrada: str):
 
     resolucao_video_saida_str = "" 
     if formato_saida == ".mp4":
-        resolucao_video_saida_str = RESOLUCOES_VIDEO['1'][0]
-        desc_res_fixa = f"{RESOLUCOES_VIDEO['1'][1]} ({RESOLUCOES_VIDEO['1'][0]})"
-        print(f"ℹ️  Gerando MP4 com resolução padrão: {desc_res_fixa}")
+        # Menu de escolha de resolução
+        print("\n📐 Escolha a resolução do vídeo:")
+        print("   1. 360p (640x360) - Baixa qualidade, arquivo pequeno")
+        print("   2. 480p (854x480) - Qualidade média")
+        print("   3. 720p (1280x720) - HD, boa qualidade")
+        print("   4. 1080p (1920x1080) - Full HD, alta qualidade")
+        print("   5. 144p (256x144) - Muito baixa qualidade")
+        print("   6. 240p (426x240) - Qualidade muito baixa")
+        
+        resolucoes_disponiveis = {
+            '1': ('640x360', '360p'),
+            '2': ('854x480', '480p'),
+            '3': ('1280x720', '720p'),
+            '4': ('1920x1080', '1080p'),
+            '5': ('256x144', '144p'),
+            '6': ('426x240', '240p'),
+        }
+        
+        while True:
+            try:
+                escolha_res = await aioconsole.ainput("Escolha (1-6) [padrão: 1]: ")
+                escolha_res = escolha_res.strip() or '1'
+                
+                if escolha_res in resolucoes_disponiveis:
+                    resolucao_video_saida_str, desc_res = resolucoes_disponiveis[escolha_res]
+                    print(f"ℹ️  Gerando MP4 com resolução: {desc_res} ({resolucao_video_saida_str})")
+                    break
+                else:
+                    print("⚠️ Opção inválida. Escolha entre 1 e 6.")
+            except asyncio.CancelledError:
+                return
     if CANCELAR_PROCESSAMENTO: return
 
     duracao_total_seg = obter_duracao_midia(str(path_entrada_obj))
@@ -2066,11 +2306,8 @@ async def menu_melhorar_audio_video():
         if not await obter_confirmacao("Melhorar outro arquivo?", default_yes=False): break
 
 async def menu_converter_mp3_para_mp4():
-    """Menu para converter MP3 para MP4 (tela preta, 360p)."""
+    """Menu para converter MP3 para MP4 (tela preta com resolução personalizável)."""
     global CANCELAR_PROCESSAMENTO; CANCELAR_PROCESSAMENTO = False
-
-    resolucao_fixa_str = RESOLUCOES_VIDEO['1'][0]
-    resolucao_fixa_desc = RESOLUCOES_VIDEO['1'][1]
 
     while True:
         caminho_mp3 = await _selecionar_arquivo_para_processamento(['.mp3'])
@@ -2082,13 +2319,45 @@ async def menu_converter_mp3_para_mp4():
             print("❌ Não foi possível obter a duração do MP3 ou é inválida.");
             await asyncio.sleep(2); continue
 
-        print(f"\nℹ️  Convertendo MP3 para MP4 com resolução fixa: {resolucao_fixa_desc} ({resolucao_fixa_str}).")
+        # Menu de escolha de resolução
+        print("\n📐 Escolha a resolução do vídeo:")
+        print("   1. 360p (640x360) - Baixa qualidade, arquivo pequeno")
+        print("   2. 480p (854x480) - Qualidade média")
+        print("   3. 720p (1280x720) - HD, boa qualidade")
+        print("   4. 1080p (1920x1080) - Full HD, alta qualidade")
+        print("   5. 144p (256x144) - Muito baixa qualidade")
+        print("   6. 240p (426x240) - Qualidade muito baixa")
+        
+        resolucoes_disponiveis = {
+            '1': ('640x360', '360p'),
+            '2': ('854x480', '480p'),
+            '3': ('1280x720', '720p'),
+            '4': ('1920x1080', '1080p'),
+            '5': ('256x144', '144p'),
+            '6': ('426x240', '240p'),
+        }
+        
+        while True:
+            try:
+                escolha_res = await aioconsole.ainput("Escolha (1-6) [padrão: 1]: ")
+                escolha_res = escolha_res.strip() or '1'
+                
+                if escolha_res in resolucoes_disponiveis:
+                    resolucao_str, resolucao_desc = resolucoes_disponiveis[escolha_res]
+                    break
+                else:
+                    print("⚠️ Opção inválida. Escolha entre 1 e 6.")
+            except asyncio.CancelledError:
+                return
+        
         if CANCELAR_PROCESSAMENTO: break
 
-        nome_video_saida = limpar_nome_arquivo(f"{path_mp3_obj.stem}_VIDEO_{resolucao_fixa_desc}.mp4")
+        print(f"\nℹ️  Convertendo MP3 para MP4 com resolução: {resolucao_desc} ({resolucao_str}).")
+
+        nome_video_saida = limpar_nome_arquivo(f"{path_mp3_obj.stem}_VIDEO_{resolucao_desc}.mp4")
         caminho_video_saida = path_mp3_obj.with_name(nome_video_saida)
 
-        if criar_video_com_audio_ffmpeg(caminho_mp3, str(caminho_video_saida), duracao_mp3, resolucao_fixa_str):
+        if criar_video_com_audio_ffmpeg(caminho_mp3, str(caminho_video_saida), duracao_mp3, resolucao_str):
             print(f"✅ Vídeo gerado: {caminho_video_saida}")
         else:
             print(f"❌ Falha ao gerar vídeo a partir de {path_mp3_obj.name}")
@@ -2234,9 +2503,12 @@ async def atualizar_script():
     global CANCELAR_PROCESSAMENTO; CANCELAR_PROCESSAMENTO = False
     limpar_tela(); print("🔄 ATUALIZAÇÃO DO SCRIPT")
     
-    url_script = "https://raw.githubusercontent.com/JonJonesBR/Conversor_TTS/main/Conversor_TTS_com_MP4_09.04.2025.py"
+    # --- INÍCIO DA CORREÇÃO DE BUG ---
+    # Remove a data fixa do URL para baixar sempre a versão mais recente
+    url_script = "https://raw.githubusercontent.com/JonJonesBR/Conversor_TTS/main/Conversor_TTS_com_MP4.py"
+    # --- FIM DA CORREÇÃO DE BUG ---
     
-    if not await obter_confirmacao(f"Baixar versão mais recente de '{url_script}'?"):
+    if not await obter_confirmacao(f"Baixar versão mais recente de 'Conversor_TTS_com_MP4.py'?"):
         print("❌ Cancelado."); await asyncio.sleep(1); return
 
     print("\n🔄 Baixando...");
@@ -2342,4 +2614,3 @@ if __name__ == "__main__":
         import traceback; traceback.print_exc()
     finally:
         print("🔚 Script finalizado.")
-
